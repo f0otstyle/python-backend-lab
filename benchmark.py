@@ -42,6 +42,19 @@ if __name__ == '__main__':
     with ProcessPoolExecutor(max_workers=5) as executor:
         benchmark('Многопроцессорность', lambda: list(executor.map(benchmark_cpu, A)))
 
+    print('CPU-bound задания используя больше ядер')
+
+    with ProcessPoolExecutor(max_workers=5) as executor:
+        benchmark('Многопроцессорность на 5 ядрах', lambda: list(executor.map(benchmark_cpu, A)))
+
+    with ProcessPoolExecutor(max_workers=10) as executor:
+        benchmark('Многопроцессорность на 10 ядрах', lambda: list(executor.map(benchmark_cpu, A)))
+
+    with ProcessPoolExecutor(max_workers=40) as executor:
+        benchmark('Многопроцессорность на 40 ядрах', lambda: list(executor.map(benchmark_cpu, A)))
+
+    with ProcessPoolExecutor(max_workers=61) as executor:
+        benchmark('Многопроцессорность на 80 ядрах', lambda: list(executor.map(benchmark_cpu, A)))
 
     print('I/O-bound задания')
     benchmark('Однопоточность', lambda: list(map(benchmark_i_o, URL)))

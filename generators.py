@@ -80,6 +80,51 @@ def batched(iterable, n):
     if arr:
         yield arr
 
+# --------------------------
+# Проверка вложенных функций
+# --------------------------
+
+
+def make_counter_1():
+    count = 0
+
+    def outer():
+        count += 1
+        return count
+
+    return outer
+
+
+def make_counter_2():
+    count = 0
+
+    def outer():
+        nonlocal count
+        count += 1
+        return count
+
+    return outer
+
+# ===================================
+# Контекстный менеджер
+# ===================================
+def mycontextmanager_1():
+    f = open('test.txt', 'w')
+    try:
+        f.write('Hello')
+        raise ValueError("Ошибка!")
+    finally:
+        f.close()
+
+
+def mycontextmanager_2():
+    try:
+        with open('test.txt', 'w') as f:
+            f.write('Hello')
+            raise ValueError("Ошибка!")
+    except ValueError as e:
+        print(f"Поймали исключение: {e}")
+
 
 if __name__ == '__main__':
     tracemalloc.start()
@@ -102,3 +147,15 @@ if __name__ == '__main__':
     iterable = [i for i in range(11)]
     for i in batched(iterable, 3):
         print(i)
+
+        counter_1 = make_counter_1()
+    try:
+        print(counter_1())
+    except UnboundLocalError:
+        print('Ошибка: UnboundLocalError')
+
+    counter_2 = make_counter_2()
+    print(counter_2())
+    print(counter_2())
+    print(mycontextmanager_2())
+    print(mycontextmanager_1())
