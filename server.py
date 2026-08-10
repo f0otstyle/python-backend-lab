@@ -52,7 +52,7 @@ class UserRegisterSchema(BaseModel):
     password: str
 
 
-@app.post('/registerate', status_code=HTTPStatus.CREATED)
+@app.post('/register', status_code=HTTPStatus.CREATED)
 async def registrate(user: UserRegisterSchema):
     if db.get(user.username):
         logger.error('Пользователь уже существует')
@@ -102,11 +102,11 @@ async def login(response: Response, user: UserRegisterSchema):
     return {"message": "Успешный вход"}
 
 
-@app.get('/get_login',
+@app.get('/users/me',
          status_code=HTTPStatus.OK,
          dependencies=[Depends(security.access_token_required)]
          )
-async def get_login():
+async def users_me():
     logger.info('Вы авторизованы')
     return {'data': 'Вы авторизованы'}
 

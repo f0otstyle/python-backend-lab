@@ -2,7 +2,7 @@ from time import perf_counter
 import requests
 
 
-URL = 'http://127.0.0.1:8000/delay/1'
+URL = 'http://127.0.0.1:8000/health'
 
 
 def log(func):

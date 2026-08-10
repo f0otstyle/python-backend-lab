@@ -53,7 +53,7 @@ if __name__ == '__main__':
     with ProcessPoolExecutor(max_workers=40) as executor:
         benchmark('Многопроцессорность на 40 ядрах', lambda: list(executor.map(benchmark_cpu, A)))
 
-    with ProcessPoolExecutor(max_workers=61) as executor:
+    with ProcessPoolExecutor(max_workers=80) as executor:
         benchmark('Многопроцессорность на 80 ядрах', lambda: list(executor.map(benchmark_cpu, A)))
 
     print('I/O-bound задания')

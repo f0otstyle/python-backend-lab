@@ -16,11 +16,11 @@ def test_list_of_orders(test_client: TestClient):
 
 def test_ordering_a_taxi(test_client: TestClient):
     request_data = {
-        "Location": "Карла Маркса 6/1"
+        "address": "Карла Маркса 6/1"
     }
 
     headers = {
-        "Idempotency-Key": "123"
+        "idempotency_Key": "123"
     }
     result = test_client.post(
         '/taxi',
@@ -31,9 +31,9 @@ def test_ordering_a_taxi(test_client: TestClient):
 
     assert result.status_code == 201
     assert body["id"] >= 1
-    assert body["Location"] == 'Карла Маркса 6/1'
-    assert isinstance(body["Location"], str)
-    assert isinstance(body["Idempotency-Key"], str)
+    assert body["address"] == 'Карла Маркса 6/1'
+    assert isinstance(body["address"], str)
+    assert isinstance(body["idempotency_key"], str)
     assert isinstance(body["CreatedAt"], (int, float))
 
     order_id = body["id"]
@@ -43,8 +43,8 @@ def test_ordering_a_taxi(test_client: TestClient):
     order = search_response.json()
 
     assert order["id"] == order_id
-    assert order["Location"] == "Карла Маркса 6/1"
-    assert order["Idempotency-Key"] == "123"
+    assert order["address"] == "Карла Маркса 6/1"
+    assert order["idempotency_key"] == "123"
 
 
 def test_order_search_not_found(test_client: TestClient):
@@ -61,11 +61,11 @@ def test_order_search_invalid_id(test_client: TestClient):
 
 def test_delete_order(test_client: TestClient):
     request_data = {
-            "Location": "Карла Маркса 6/1"
+            "address": "Карла Маркса 6/1"
         }
 
     headers = {
-            "Idempotency-Key": "123"
+            "idempotency_Key": "123"
         }
     result = test_client.post(
             '/taxi',
