@@ -88,22 +88,22 @@ def batched(iterable, n):
 def make_counter_1():
     count = 0
 
-    def outer():
+    def inner():
         count += 1
         return count
 
-    return outer
+    return inner
 
 
 def make_counter_2():
     count = 0
 
-    def outer():
+    def inner():
         nonlocal count
         count += 1
         return count
 
-    return outer
+    return inner
 
 # ===================================
 # Контекстный менеджер
@@ -148,9 +148,9 @@ if __name__ == '__main__':
     for i in batched(iterable, 3):
         print(i)
 
-        counter_1 = make_counter_1()
+    counter_1 = make_counter_1()
     try:
-        print(counter_1())
+        print(make_counter_1())
     except UnboundLocalError:
         print('Ошибка: UnboundLocalError')
 
@@ -158,4 +158,7 @@ if __name__ == '__main__':
     print(counter_2())
     print(counter_2())
     print(mycontextmanager_2())
-    print(mycontextmanager_1())
+    try:
+        print(mycontextmanager_1())
+    except Exception as e:
+        print(f"Ошибка: {e}")
