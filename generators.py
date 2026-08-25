@@ -150,7 +150,7 @@ if __name__ == '__main__':
 
     counter_1 = make_counter_1()
     try:
-        print(make_counter_1())
+        print(counter_1)
     except UnboundLocalError:
         print('Ошибка: UnboundLocalError')
 

@@ -100,21 +100,24 @@ async def list_of_orders():
 async def ordering_a_taxi(
     orders: OrderCreate,
     request: Request,
-    idempotency_key: str = Header(None, alias="idempotency_key")):
+    idempotency_key: str = Header(None, alias="Idempotency-Key")):
     '''Создаем заказ'''
 
     global counter
     address = orders.address
 
+    logger.info(f"Получен заголовок idempotency_key: {idempotency_key}")
+    logger.info(f"Все заголовки: {dict(request.headers)}")
+
     if not idempotency_key:
         raise HTTPException(
             status_code=HTTPStatus.BAD_REQUEST,
-            detail="Поле 'idempotency_Key' обязательно"
+            detail="Поле 'idempotency_key' обязательно"
         )
 
     current_time = datetime.now(timezone.utc).timestamp()
     for order in db:
-        if order.get('Idempotency-Key') == idempotency_key:
+        if order.get('idempotency_key') == idempotency_key:
             logger.info(f"Повторный запрос с ключом {idempotency_key}")
             return JSONResponse(
                 status_code=HTTPStatus.CREATED,
@@ -123,7 +126,7 @@ async def ordering_a_taxi(
             )
 
     for order in db:
-        if order.get('Location') == address:
+        if order.get('address') == address:
             created_at = order.get('CreatedAt', 0)
             time_diff = current_time - created_at
             if time_diff < TIME:
@@ -141,7 +144,7 @@ async def ordering_a_taxi(
         "CreatedAt": current_time
     }
     db.append(order)
-    logger.info(f'Новый закащ сделан с ID {order.get("id")}')
+    logger.info(f'Новый заказ сделан с ID {order.get("id")}')
 
     counter += 1
 

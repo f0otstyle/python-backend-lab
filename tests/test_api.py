@@ -20,7 +20,7 @@ def test_ordering_a_taxi(test_client: TestClient):
     }
 
     headers = {
-        "idempotency_Key": "123"
+        "Idempotency-Key": "123"
     }
     result = test_client.post(
         '/taxi',
@@ -65,7 +65,7 @@ def test_delete_order(test_client: TestClient):
         }
 
     headers = {
-            "idempotency_Key": "123"
+            "Idempotency-Key": "123"
         }
     result = test_client.post(
             '/taxi',
