@@ -296,12 +296,93 @@ FROM group_class;
 ## Эксперимент №1 замерим поиск записи в таблице без индекса и с индексом на таблице с 10 млн с B-tree:
 **Ожидания**
 - Поиск элемента по id занимает где-то 0.01-0.03 секунды, поэтому стоит предположить что и поиск по полю с индекосм будет где-то в таком же диапазоне  по той причине, что первичный ключ заиндексирован, а поиск без индекса больше на 200-400 мс.
+  
+  **Без индексов**
+
+  - 1-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='999' ```
+  ```
+  Gather  (cost=1000.00..107136.93 rows=1 width=11) (actual time=2.621..316.306 rows=1 loops=1)
+   Workers Planned: 2
+   Workers Launched: 2
+   ->  Parallel Seq Scan on orders  (cost=0.00..106136.83 rows=1 width=11) (actual time=190.069..292.856 rows=0 loops=3)
+         Filter: ((user_id)::text = '999'::text)
+         Rows Removed by Filter: 3333333
+    Planning Time: 0.056 ms
+    JIT:
+      Functions: 6
+      Options: Inlining false, Optimization false, Expressions true, Deforming true
+      Timing: Generation 0.744 ms, Inlining 0.000 ms, Optimization 0.576 ms, Emission 8.038 ms, Total 9.357 ms
+    Execution Time: 316.629 ms
+  ```
+  - Объяснение - PostgreSQL использовал 2 рабочих процесса, параллельно последовательно сканировал	каждый воркер.
+
+  - 2-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='999999'```
+  ```
+  Gather  (cost=1000.00..107136.93 rows=1 width=11) (actual time=341.365..346.607 rows=1 loops=1)
+   Workers Planned: 2
+   Workers Launched: 2
+   ->  Parallel Seq Scan on orders  (cost=0.00..106136.83 rows=1 width=11) (actual time=228.513..319.751 rows=0 loops=3)
+         Filter: ((user_id)::text = '999999'::text)
+         Rows Removed by Filter: 3333333
+  Planning Time: 0.109 ms
+  JIT:
+   Functions: 6
+   Options: Inlining false, Optimization false, Expressions true, Deforming true
+   Timing: Generation 0.856 ms, Inlining 0.000 ms, Optimization 0.776 ms, Emission 11.713 ms, Total 13.345 ms
+  Execution Time: 346.994 ms
+  ```
+  - Объяснение - PostgreSQL использовал 2 рабочих процесса, параллельно последовательно сканировал	каждый воркер.
+
+  - 3-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='9999999' ```
+  ```
+  Gather  (cost=1000.00..107136.93 rows=1 width=11) (actual time=375.798..381.694 rows=1 loops=1)
+   Workers Planned: 2
+   Workers Launched: 2
+   ->  Parallel Seq Scan on orders  (cost=0.00..106136.83 rows=1 width=11) (actual time=356.509..356.510 rows=0 loops=3)
+         Filter: ((user_id)::text = '9999999'::text)
+         Rows Removed by Filter: 3333333
+  Planning Time: 0.063 ms
+  JIT:
+   Functions: 6
+   Options: Inlining false, Optimization false, Expressions true, Deforming true
+   Timing: Generation 0.794 ms, Inlining 0.000 ms, Optimization 0.673 ms, Emission 8.818 ms, Total 10.285 ms
+  Execution Time: 382.049 ms
+  ```
+
+  - Объяснение - PostgreSQL использовал 2 рабочих процесса, параллельно последовательно сканировал	каждый воркер.
+
+  **С индексами**
+  - Установим индексы: CREATE INDEX idx_user_id ON orders(user_id);
+
+  - 1-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='999' ```
+  ```
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.041..0.042 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999'::text)
+  Planning Time: 0.055 ms
+  Execution Time: 0.033 ms
+  ```
+  - Объяснение - .
+
+  - 2-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='999999'```
+  ```
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.021..0.022 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999999'::text)
+  Planning Time: 0.061 ms
+  Execution Time: 0.035 ms
+  ```
+  - 3-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='9999999' ```
+  ```
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.021..0.022 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '9999999'::text)
+  Planning Time: 0.056 ms
+  Execution Time: 0.036 ms
+  ```
 
 |    Запрос   | С индекса |Без индексом|
 |-------------|-----------|------------|
-|     '999'   |  0.036 ms |   329 ms   |
-|   '999999'  |   0.04 ms |  391.3 ms  |
-|  '9999999'  |  0.042 ms |  426.1 ms  |
+|     '999'   |  0.033 ms |   316 ms   |
+|   '999999'  |  0.035 ms |  346.3 ms  |
+|  '9999999'  |  0.036 ms |   382 ms   |
 
 **Вывод**
 - Эксперимент показал, что поиск через B-tree индексы намного быстрые чем без них, мне кажется что можно запросы делать еще быстрее использовать HASH-функции где поиск за O(1) 
@@ -310,11 +391,35 @@ FROM group_class;
 **Ожидания**
 - Поиск с индексами через HASH-функции должен быть быстрее на 0.01 так как поиск за O(1), чем у B-tree с поиском O(logn)
 
+  **С HASH индексами**
+
+  - 1-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='999' ```
+  ```
+  Index Scan using idx_user_id_hash on orders  (cost=0.00..8.02 rows=1 width=11) (actual time=0.012..0.013 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999'::text)
+  Planning Time: 0.061 ms
+  Execution Time: 0.025 ms
+  ```
+  - 2-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='999999'```
+  ```
+  Index Scan using idx_user_id_hash on orders  (cost=0.00..8.02 rows=1 width=11) (actual time=0.013..0.014 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999999'::text)
+  Planning Time: 0.060 ms
+  Execution Time: 0.027 ms
+  ```
+  - 3-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='9999999' ```
+  ```
+  Index Scan using idx_orders_user_id_hash on orders  (cost=0.00..8.02 rows=1 width=11) (actual time=0.014..0.014 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '9999999'::text)
+  Planning Time: 0.061 ms
+  Execution Time: 0.027 ms
+  ```
+
 |    Запрос   |   B-tree  |    HASH    |
 |-------------|-----------|------------|
-|     '999'   |  0.036 ms |   0.02 ms  |
-|   '999999'  |   0.04 ms |  0.022 ms  |
-|  '9999999'  |  0.042 ms |  0.024 ms  |
+|     '999'   |  0.033 ms |  0.025 ms  |
+|   '999999'  |  0.035 ms |  0.027 ms  |
+|  '9999999'  |  0.036 ms |  0.027 ms  |
 
 **Вывод**
 - эксперимент подтвердил ожидания, что использования идексов через HASH-функции будет быстрее, но и B-tree показал достаточно хороший результат.
@@ -371,6 +476,38 @@ Seq Scan on orders  (cost=0.00..18870.00 rows=999902 width=22) (actual time=0.01
 |  INSERT  |Каждая вставка требует обновления индекса медленнее|
 |  UPDATE  |Если обновляешь индексируемую колонку индекс перестраивается |
 |  DELETE  |Удаление из индекса тоже занимает время |
+
+### Что такое EXPLAIN ANALYZE:
+- EXPLAIN ANALYZE - это инструмент PostgreSQL, который реально выполняет запрос и показывает, как он работал:
+
+  - План выполнения (как БД собирается выполнять запрос)
+  - Фактическое время (сколько реально заняло)
+  - Количество строк (сколько обработано на каждом этапе)
+
+  **Базовый синтаксис**
+  - Запрос
+  ```
+  EXPLAIN ANALYZE SELECT * FROM users WHERE id = 1;
+  ```
+  - Ответ
+  ```
+  Index Scan using users_pkey on users  (cost=0.15..8.17 rows=1 width=36) (actual
+  time=0.043..0.045 rows=1 loops=1)
+   Index Cond: (id = 1)
+  Planning Time: 0.109 ms
+  Execution Time: 0.066 ms
+  ```
+  - Анализируя ответ мы видим:
+
+  |    Параметр   |    Обозначение    |
+  |---------------|-------------------|
+  |cost=0.15..8.17|Примерная стоимость|
+  |    rows=1     |Планировщик ожидает 1 строку|
+  |actual time=0.125..0.289|Реальное время выполнение|
+  |actual rows=1|Реальное количество строк|
+  |loops=1|Реальное выполнение строк|
+  |Planning Time|Время составления плана|
+  |Execution Time|Время выполнения запроса|
 
 **Вывод**
 - Из всего сказаного, можно сделать вывод что индексировать надо только то что мы используем для поиска и сортировки, а не все информацию, в противном случае сталкнемся с тем с медленным вставкам и раздутием БД.
