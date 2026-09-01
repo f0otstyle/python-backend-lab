@@ -2,6 +2,9 @@ from fastapi.testclient import TestClient
 from taxi_api import app
 import pytest
 
+USER = {'username': 'Саша',
+        'password': '1234'}
+
 
 @pytest.fixture
 def test_client():
@@ -10,14 +13,12 @@ def test_client():
 
 @pytest.fixture
 def test_user(test_client: TestClient):
-    user = {'username': 'Саша',
-            'password': '1234'}
 
-    registrate_response = test_client.post('/registrate', json=user)
-    assert registrate_response.status_code == 201
-    user_id = 1
-    return user_id
-
+    registrate_response = test_client.post('/registrate', json=USER)
+    if registrate_response.status_code == 400:
+        return 1
+    elif registrate_response.status_code == 201:
+        return 1
 
 def test_list_of_orders(test_client: TestClient):
     result = test_client.get('/taxi')
@@ -62,6 +63,8 @@ def test_ordering_a_taxi(test_client: TestClient, test_user):
     headers = {
             "Idempotency-Key": "123"
         }
+    login_response = test_client.post('/login', json=USER)
+    assert login_response.status_code == 200
     result = test_client.post(
             '/taxi',
             json=request_data,

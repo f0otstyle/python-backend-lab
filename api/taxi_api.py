@@ -61,7 +61,8 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS drivers (
             id SERIAL PRIMARY KEY,
             name VARCHAR NOT NULL,
-            car VARCHAR NOT NULL
+            car VARCHAR NOT NULL,
+            money NUMERIC NOT NULL DEFAULT 0 CHECK (money >= 0)
         )
         """)
         await conn.execute("""
@@ -78,6 +79,7 @@ async def init_db():
         """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS rides (
+            id SERIAL PRIMARY KEY,
             order_id INTEGER REFERENCES order_taxi(id),
             driver_id INTEGER REFERENCES drivers(id),
             user_id INTEGER REFERENCES users(id),
@@ -452,6 +454,12 @@ async def pay_to_taxi(
                 SET balance = balance - $1
                 WHERE user_id = $2
             ''', order['price'], order['user_id'])
+
+            await conn.execute('''
+                UPDATE drivers
+                SET money = money + $1
+                WHERE id = $2
+                ''', order['price'], order['driver_id'])
 
             logger.info(f'Списано {order["price"]} с карты пользователя {order["user_id"]}')
             return True
