@@ -361,7 +361,7 @@ FROM group_class;
   Planning Time: 0.055 ms
   Execution Time: 0.033 ms
   ```
-  - Объяснение - .
+  - Объяснение - поиск по B-tree индексу. БД идёт по дереву, сравнивая значения, находит указатель на строку в индексе и читает её из таблиц. 
 
   - 2-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='999999'```
   ```
@@ -370,6 +370,8 @@ FROM group_class;
   Planning Time: 0.061 ms
   Execution Time: 0.035 ms
   ```
+  - Объяснение - поиск по B-tree индексу. БД идёт по дереву, сравнивая значения, находит указатель на строку в индексе и читает её из таблиц. 
+
   - 3-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='9999999' ```
   ```
   Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.021..0.022 rows=1 loops=1)
@@ -377,6 +379,7 @@ FROM group_class;
   Planning Time: 0.056 ms
   Execution Time: 0.036 ms
   ```
+  - Объяснение - поиск по B-tree индексу. БД идёт по дереву, сравнивая значения, находит указатель на строку в индексе и читает её из таблиц. 
 
 |    Запрос   | С индекса |Без индексом|
 |-------------|-----------|------------|
@@ -795,7 +798,7 @@ COMMIT;
 ### Эксперимент 4  Lost Update/потерянное обновление 
 
 **Цель**
-- Показать, как две транзакции могут потерять обновление данных.
+- Показать, как уровень изоляции REPEATABLE READ может решить проблему с аномалией потерянное обновление.
 
 **Выполнение:**
 
@@ -819,14 +822,14 @@ COMMIT;
 
 ```
 BEGIN;
+SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
 SELECT * FROM accounts WHERE id = 1;
 UPDATE accounts SET balance = 1100 WHERE id = 1;
 COMMIT;
 ```
  **Результат**
-|id | name  | balance |
-|---|-------|---------|
-| 1 | Alice |   1100  |
+ - 1-транзакция: UPDATE 1, данные сохранились, первая транзакция выиграла она выполнислась первая. 
+ - 2-транзакция: выполнилась, вторая транзакция выполнилась второй и она проиграла и получила ошибку ```ERROR:  could not serialize access due to concurrent update```.
 
 **Вывод**
 - Мы потеряли 100 рублей, ожидания были 1200

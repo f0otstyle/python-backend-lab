@@ -23,8 +23,6 @@ DB_NAME = os.getenv('POSTGRES_DB', 'taxi_db')
 
 TIME = 5
 
-app = FastAPI()
-
 db_pool = None
 
 config = AuthXConfig(
