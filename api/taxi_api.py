@@ -6,6 +6,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 # from models import db_pool
+from contextlib import asynccontextmanager
 from error_handler import OrderError, SearchError
 from logging_log import logger, log
 from authx import AuthXConfig, AuthX
@@ -15,7 +16,7 @@ import bcrypt
 import os
 
 
-DB_HOST = os.getenv('DB_HOST', 'localhost')
+DB_HOST = os.getenv('DB_HOST', 'db')
 DB_PORT = int(os.getenv('DB_PORT', 5432))
 DB_USER = os.getenv('POSTGRES_USER', 'pgAdmin')
 DB_PASSWORD = os.getenv('POSTGRES_PASSWORD', 'postgres')
@@ -24,16 +25,6 @@ DB_NAME = os.getenv('POSTGRES_DB', 'taxi_db')
 TIME = 5
 
 db_pool = None
-
-config = AuthXConfig(
-    JWT_SECRET_KEY='SECRET-KEY',
-    JWT_TOKEN_LOCATION=['cookies'],
-    JWT_ACCESS_COOKIE_NAME='my_cookie',
-    JWT_COOKIE_CSRF_PROTECT=False,
-    )
-
-
-security: AuthX = AuthX(config=config)
 
 
 async def init_db():
@@ -95,6 +86,27 @@ async def init_db():
     return db_pool
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db = await init_db()
+    app.state.db = db
+    yield
+    await db.close()
+
+app = FastAPI(lifespan=lifespan)
+
+
+config = AuthXConfig(
+    JWT_SECRET_KEY='SECRET-KEY',
+    JWT_TOKEN_LOCATION=['cookies'],
+    JWT_ACCESS_COOKIE_NAME='my_cookie',
+    JWT_COOKIE_CSRF_PROTECT=False,
+    )
+
+
+security: AuthX = AuthX(config=config)
+
+
 class OrderCreate(BaseModel):
     from_address: str
     to_address: str
@@ -138,11 +150,9 @@ async def search_error(request: Request, exc: SearchError):
 
 
 async def get_pool():
-    global db_pool
-    db_pool = await init_db()
-    if db_pool is None:
+    if app.state.db is None:
         raise RuntimeError('База данных не инициализирована')
-    return db_pool
+    return app.state.db
 
 
 @app.post('/registrate', status_code=HTTPStatus.CREATED)
@@ -179,11 +189,11 @@ async def registrate(
 @app.post('/login', status_code=HTTPStatus.OK)
 async def login(
     response: Response,
-    user: UserRegisterSchema,
-    pool: asyncpg.Pool = Depends(get_pool)
+    user: UserRegisterSchema
         ):
     username = user.username
-    async with pool.acquire() as conn:
+    db = app.state.db
+    async with db.acquire() as conn:
         existing = await conn.fetchrow('''
             SELECT *
             FROM users
@@ -235,13 +245,13 @@ async def logout(response: Response):
 @app.post('/drivers', status_code=HTTPStatus.CREATED)
 @log
 async def create_driver(
-    driver: DriverCreate,
-    pool: asyncpg.Pool = Depends(get_pool)
-):
+    driver: DriverCreate
+        ):
+    '''Добавляем нового водителя'''
     driver_name = driver.name
     driver_car = driver.car
-    '''Добавляем нового водителя'''
-    async with pool.acquire() as conn:
+    db = app.state.db
+    async with db.acquire() as conn:
         new_driver = await conn.fetchrow('''
             INSERT INTO drivers (name, car)
             VALUES ($1, $2)
@@ -254,10 +264,11 @@ async def create_driver(
 
 @app.get('/taxi', status_code=HTTPStatus.OK)
 @log
-async def list_of_orders(pool: asyncpg.Pool = Depends(get_pool)):
+async def list_of_orders():
     '''Список всех заказов'''
     try:
-        async with pool.acquire() as conn:
+        db = app.state.db
+        async with db.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT * FROM order_taxi"""
             )
@@ -277,10 +288,10 @@ async def list_of_orders(pool: asyncpg.Pool = Depends(get_pool)):
 async def ordering_a_taxi(
     orders: OrderCreate,
     request: Request,
-    pool: asyncpg.Pool = Depends(get_pool),
     idempotency_key: str = Header(None, alias="Idempotency-Key")
         ):
     '''Создаем заказ'''
+    db = app.state.db
     from_address = orders.from_address
     to_address = orders.to_address
     price = orders.price
@@ -291,7 +302,7 @@ async def ordering_a_taxi(
             detail="Поле 'idempotency_key' обязательно"
         )
     current_time = datetime.now(timezone.utc).timestamp()
-    async with pool.acquire() as conn:
+    async with db.acquire() as conn:
         existing = await conn.fetchrow('''
             SELECT * FROM order_taxi WHERE idempotency_key=$1
         ''', idempotency_key)
@@ -318,53 +329,66 @@ async def ordering_a_taxi(
                 raise OrderError()
             else:
                 logger.info('Можно сделать новый заказ')
+        try:
+            new_order = await conn.fetchrow('''
+                INSERT INTO order_taxi (
+                idempotency_key, from_address, to_address, price
+                )
+                VALUES ($1, $2, $3, $4)
+                RETURNING id, idempotency_key, from_address, to_address, price,
+                created_at''', idempotency_key, from_address, to_address, price)
 
-        new_order = await conn.fetchrow('''
-            INSERT INTO order_taxi (
-            idempotency_key, from_address, to_address, price
-            )
-            VALUES ($1, $2, $3, $4)
-            RETURNING id, idempotency_key, from_address, to_address, price,
-            created_at''', idempotency_key, from_address, to_address, price)
+            appoint = await taxi_to_appoint(new_order['id'], db)
 
-        appoint = await taxi_to_appoint(new_order['id'], pool)
-
-        if appoint:
-            logger.info(f'Водитель назначен на заказ {new_order["id"]}')
-            drive = await taxi_ride(new_order['id'], pool)
-            if drive:
-                pay = await pay_to_taxi(new_order['id'], pool)
-                logger.info(
-                    f'Заказ {new_order["id"]} закончен, оплата'
-                    )
-                if pay:
-                    logger.info(f'Заказ {new_order["id"]}, успешно оплачен')
-                else:
+            if appoint:
+                logger.info(f'Водитель назначен на заказ {new_order["id"]}')
+                drive = await taxi_ride(new_order['id'], db)
+                if drive:
+                    pay = await pay_to_taxi(new_order['id'], db)
                     logger.info(
-                        f'Заказ {new_order["id"]}, оплата не прошла'
+                        f'Заказ {new_order["id"]} закончен, оплата'
                         )
+                    if pay:
+                        logger.info(f'Заказ {new_order["id"]}, успешно оплачен')
+                    else:
+                        logger.info(
+                            f'Заказ {new_order["id"]}, оплата не прошла'
+                            )
+                else:
+                    logger.info(f'Поездка не закончена по заказ {new_order["id"]}')
             else:
-                logger.info(f'Поездка не закончена по заказ {new_order["id"]}')
-        else:
-            logger.warning(f'Заказ {new_order["id"]} создан без водителя')
+                logger.warning(f'Заказ {new_order["id"]} создан без водителя')
 
-        logger.info(f'Новый заказ сделан с ID {new_order["id"]}')
-        return JSONResponse(
+            logger.info(f'Новый заказ сделан с ID {new_order["id"]}')
+            return JSONResponse(
+                    status_code=HTTPStatus.CREATED,
+                    content=jsonable_encoder(dict(new_order)),
+                    headers={"Location": f"/taxi/{new_order['id']}"}
+                )
+        except asyncpg.UniqueViolationError:
+            existing = await conn.fetchrow(
+                'SELECT * FROM order_taxi WHERE idempotency_key = $1',
+                idempotency_key
+            )
+            return JSONResponse(
                 status_code=HTTPStatus.CREATED,
-                content=jsonable_encoder(dict(new_order)),
-                headers={"Location": f"/taxi/{new_order['id']}"}
+                content=jsonable_encoder(dict(existing)),
+                headers={"Location": f"/taxi/{existing['id']}"}
             )
 
 
 @log
 async def taxi_to_appoint(
-    order_id: int,
-    pool: asyncpg.Pool,
+    order_id: int
         ):
     '''Назначаем водителя для поездки'''
-    async with pool.acquire() as conn:
+    db = app.state.db
+    async with db.acquire() as conn:
         count = await conn.fetchrow('SELECT COUNT(*) FROM drivers')
         count_row = count['count']
+        if count_row == 0:
+            logger.warning('Нет свободных водителей')
+            return None
         id_drive = random.randint(1, count_row)
         driver = await conn.fetchrow('''
             SELECT id
@@ -391,11 +415,11 @@ async def taxi_to_appoint(
 
 @log
 async def taxi_ride(
-    order_id: int,
-    pool: asyncpg.Pool,
+    order_id: int
         ):
     '''Симуляция поездки'''
-    async with pool.acquire() as conn:
+    db = app.state.db
+    async with db.acquire() as conn:
         order = await conn.fetchrow('''
             SELECT * FROM order_taxi WHERE id=$1
         ''', order_id)
@@ -422,11 +446,11 @@ async def taxi_ride(
 
 @log
 async def pay_to_taxi(
-    order_id: int,
-    pool: asyncpg.Pool,
+    order_id: int
         ):
     '''Оплата поездки'''
-    async with pool.acquire() as conn:
+    db = app.state.db
+    async with db.acquire() as conn:
         async with conn.transaction():
             order = await conn.fetchrow('''
                 SELECT * FROM order_taxi WHERE id=$1
@@ -466,10 +490,10 @@ async def pay_to_taxi(
 @app.post('/pay/{user_id}', status_code=HTTPStatus.OK)
 async def top_up_your_card(
     payload: MoneySchema,
-    user_id: int,
-    pool: asyncpg.Pool = Depends(get_pool)
+    user_id: int
         ):
-    async with pool.acquire() as conn:
+    db = app.state.db
+    async with db.acquire() as conn:
         async with conn.transaction():
             money = payload.money
             card = await conn.fetchrow('''
@@ -497,16 +521,16 @@ async def top_up_your_card(
          )
 @log
 async def order_search(
-    order_id: int,
-    pool: asyncpg.Pool = Depends(get_pool)
+    order_id: int
         ):
     '''Поиск конкретного заказа'''
-    async with pool.acquire() as conn:
+    db = app.state.db
+    async with db.acquire() as conn:
         existing = await conn.fetchrow('''
             SELECT * FROM order_taxi WHERE id=$1
         ''', order_id)
         if existing:
-            logger.info(f'Заказ по {existing.get(id)} найден')
+            logger.info(f'Заказ по {existing["id"]} найден')
             return JSONResponse(
                         status_code=HTTPStatus.OK,
                         content=jsonable_encoder(dict(existing)),
@@ -520,11 +544,11 @@ async def order_search(
             status_code=HTTPStatus.NO_CONTENT)
 @log
 async def order_delete(
-    order_id: int,
-    pool: asyncpg.Pool = Depends(get_pool)
+    order_id: int
         ):
     '''Удаление заказа'''
-    async with pool.acquire() as conn:
+    db = app.state.db
+    async with db.acquire() as conn:
         existing = await conn.fetchrow('''
             DELETE FROM order_taxi WHERE id=$1
             RETURNING id, idempotency_key, to_address, created_at
@@ -541,10 +565,9 @@ async def order_delete(
          status_code=HTTPStatus.OK,
          dependencies=[Depends(security.access_token_required)])
 @log
-async def history_order_taxi(
-    pool: asyncpg.Pool = Depends(get_pool)
-        ):
-    async with pool.acquire() as conn:
+async def history_order_taxi():
+    db = app.state.db
+    async with db.acquire() as conn:
         histoty = await conn.fetch('''
             SELECT *
             FROM order_taxi
