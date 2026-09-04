@@ -352,40 +352,41 @@ FROM group_class;
   - Объяснение - PostgreSQL использовал 2 рабочих процесса, параллельно последовательно сканировал	каждый воркер.
 
   **С индексами**
-  - Установим индексы: CREATE INDEX idx_user_id ON orders(user_id);
-
+  ```
+  Установим индексы: CREATE INDEX idx_user_id ON orders(user_id);
+  ```
   - 1-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='999' ```
   ```
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.041..0.042 rows=1 loops=1)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.025 rows=1 loops=1)
   Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.055 ms
-  Execution Time: 0.033 ms
+  Planning Time: 0.067 ms
+  Execution Time: 0.039 ms
   ```
   - Объяснение - поиск по B-tree индексу. БД идёт по дереву, сравнивая значения, находит указатель на строку в индексе и читает её из таблиц. 
 
   - 2-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='999999'```
   ```
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.021..0.022 rows=1 loops=1)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.026..0.027 rows=1 loops=1)
   Index Cond: ((user_id)::text = '999999'::text)
-  Planning Time: 0.061 ms
-  Execution Time: 0.035 ms
+  Planning Time: 0.067 ms
+  Execution Time: 0.042 ms
   ```
   - Объяснение - поиск по B-tree индексу. БД идёт по дереву, сравнивая значения, находит указатель на строку в индексе и читает её из таблиц. 
 
   - 3-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='9999999' ```
   ```
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.021..0.022 rows=1 loops=1)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.026 rows=1 loops=1)
   Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.056 ms
-  Execution Time: 0.036 ms
+  Planning Time: 0.071 ms
+  Execution Time: 0.041 ms
   ```
   - Объяснение - поиск по B-tree индексу. БД идёт по дереву, сравнивая значения, находит указатель на строку в индексе и читает её из таблиц. 
 
 |    Запрос   | С индекса |Без индексом|
 |-------------|-----------|------------|
-|     '999'   |  0.033 ms |   316 ms   |
-|   '999999'  |  0.035 ms |  346.3 ms  |
-|  '9999999'  |  0.036 ms |   382 ms   |
+|     '999'   |  0.039 ms |   316 ms   |
+|   '999999'  |  0.042 ms |  346.3 ms  |
+|  '9999999'  |  0.041 ms |   382 ms   |
 
 **Вывод**
 - Эксперимент показал, что поиск через B-tree индексы намного быстрые чем без них, мне кажется что можно запросы делать еще быстрее использовать HASH-функции где поиск за O(1) 
@@ -394,38 +395,346 @@ FROM group_class;
 **Ожидания**
 - Поиск с индексами через HASH-функции должен быть быстрее на 0.01 так как поиск за O(1), чем у B-tree с поиском O(logn)
 
-  **С HASH индексами**
-
-  - 1-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='999' ```
+ - Создаем первую таблицу и создаем в ней B-tree индксы:
   ```
-  Index Scan using idx_user_id_hash on orders  (cost=0.00..8.02 rows=1 width=11) (actual time=0.012..0.013 rows=1 loops=1)
+  CREATE INDEX idx_user_id ON orders(user_id);
+  ```
+ **С B-tree индексами**
+   - 1-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='999' ```
+  ```
+  1)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.025 rows=1 loops=1)
   Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.061 ms
-  Execution Time: 0.025 ms
+  Planning Time: 0.067 ms
+  Execution Time: 0.039 ms
+  2)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.025..0.026 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999'::text)
+  Planning Time: 0.069 ms
+  Execution Time: 0.041 ms
+  3)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.026..0.027 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999'::text)
+  Planning Time: 0.071 ms
+  Execution Time: 0.042 ms
+  4)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.025..0.026 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999'::text)
+  Planning Time: 0.069 ms
+  Execution Time: 0.042 ms
+  5)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.025..0.026 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999'::text)
+  Planning Time: 0.069 ms
+  Execution Time: 0.040 ms
+  6)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.025 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999'::text)
+  Planning Time: 0.068 ms
+  Execution Time: 0.040 ms
+  7)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.025..0.027 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999'::text)
+  Planning Time: 0.069 ms
+  Execution Time: 0.042 ms
+  8)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.026..0.027 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999'::text)
+  Planning Time: 0.069 ms
+  Execution Time: 0.041 ms
+  9)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.025..0.026 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999'::text)
+  Planning Time: 0.069 ms
+  Execution Time: 0.041 ms
+  10)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.025 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999'::text)
+  Planning Time: 0.068 ms
+  Execution Time: 0.040 ms
   ```
   - 2-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='999999'```
   ```
-  Index Scan using idx_user_id_hash on orders  (cost=0.00..8.02 rows=1 width=11) (actual time=0.013..0.014 rows=1 loops=1)
+  1)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.026..0.027 rows=1 loops=1)
   Index Cond: ((user_id)::text = '999999'::text)
-  Planning Time: 0.060 ms
-  Execution Time: 0.027 ms
+  Planning Time: 0.067 ms
+  Execution Time: 0.042 ms
+  2)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.026 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999999'::text)
+  Planning Time: 0.068 ms
+  Execution Time: 0.041 ms
+  3)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.023..0.024 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999999'::text)
+  Planning Time: 0.070 ms
+  Execution Time: 0.040 ms
+  4)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.025..0.026 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999999'::text)
+  Planning Time: 0.067 ms
+  Execution Time: 0.040 ms
+  5)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.025..0.026 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999999'::text)
+  Planning Time: 0.069 ms
+  Execution Time: 0.041 ms
+  6)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.026..0.028 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999999'::text)
+  Planning Time: 0.078 ms
+  Execution Time: 0.044 ms
+  7)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.026 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999999'::text)
+  Planning Time: 0.073 ms
+  Execution Time: 0.042 ms
+  8)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.026..0.027 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999999'::text)
+  Planning Time: 0.073 ms
+  Execution Time: 0.043 ms
+  9)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.026..0.027 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999999'::text)
+  Planning Time: 0.069 ms
+  Execution Time: 0.042 ms
+  10)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.026..0.027 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999999'::text)
+  Planning Time: 0.070 ms
+  Execution Time: 0.043 ms
   ```
   - 3-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='9999999' ```
   ```
-  Index Scan using idx_orders_user_id_hash on orders  (cost=0.00..8.02 rows=1 width=11) (actual time=0.014..0.014 rows=1 loops=1)
+  1)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.026 rows=1 loops=1)
   Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.061 ms
-  Execution Time: 0.027 ms
+  Planning Time: 0.071 ms
+  Execution Time: 0.041 ms
+  2)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.027..0.029 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '9999999'::text)
+  Planning Time: 0.079 ms
+  Execution Time: 0.045 ms
+  3)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.025 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '9999999'::text)
+  Planning Time: 0.069 ms
+  Execution Time: 0.040 ms
+  4)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.026 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '9999999'::text)
+  Planning Time: 0.068 ms
+  Execution Time: 0.040 ms
+  5)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.037..0.038 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '9999999'::text)
+  Planning Time: 0.111 ms
+  Execution Time: 0.055 ms
+  6)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.023..0.024 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '9999999'::text)
+  Planning Time: 0.069 ms
+  Execution Time: 0.039 ms
+  7)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.025..0.026 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '9999999'::text)
+  Planning Time: 0.068 ms
+  Execution Time: 0.042 ms
+  8)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.023..0.025 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '9999999'::text)
+  Planning Time: 0.069 ms
+  Execution Time: 0.040 ms
+  9)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.026 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '9999999'::text)
+  Planning Time: 0.068 ms
+  Execution Time: 0.040 ms
+  10)
+  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.026 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '9999999'::text)
+  Planning Time: 0.070 ms
+  Execution Time: 0.041 ms
+  ```
+
+ - Создаем вторую таблицу и создаем в ней hash-индексы:
+ ```
+  CREATE INDEX idx_hash_user ON users USING HASH (user_id);
+ ```
+
+  **С HASH индексами**
+
+  - 1-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM users WHERE user_id='999' ```
+  ```
+  1)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.021..0.022 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999'::text)
+  Planning Time: 0.163 ms
+  Execution Time: 0.036 ms
+  2)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.017..0.018 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999'::text)
+  Planning Time: 0.067 ms
+  Execution Time: 0.034 ms
+  3)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.017..0.017 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999'::text)
+  Planning Time: 0.066 ms
+  Execution Time: 0.032 ms
+  4)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.018..0.019 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999'::text)
+  Planning Time: 0.109 ms
+  Execution Time: 0.035 ms
+  5)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.016..0.017 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999'::text)
+  Planning Time: 0.066 ms
+  Execution Time: 0.032 ms
+  6)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.016..0.017 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999'::text)
+  Planning Time: 0.063 ms
+  Execution Time: 0.032 ms
+  7)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.017..0.017 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999'::text)
+  Planning Time: 0.066 ms
+  Execution Time: 0.032 ms
+  8)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.016..0.018 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999'::text)
+  Planning Time: 0.068 ms
+  Execution Time: 0.033 ms
+  9)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.022..0.024 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999'::text)
+  Planning Time: 0.083 ms
+  Execution Time: 0.043 ms
+  10)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.017..0.018 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999'::text)
+  Planning Time: 0.067 ms
+  Execution Time: 0.033 ms
+  ```
+  - 2-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM users WHERE user_id='999999'```
+  ```
+  1)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.017..0.017 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999999'::text)
+  Planning Time: 0.065 ms
+  Execution Time: 0.032 ms
+  2)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.017..0.018 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999999'::text)
+  Planning Time: 0.065 ms
+  Execution Time: 0.034 ms
+  3)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.021..0.023 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999999'::text)
+  Planning Time: 0.070 ms
+  Execution Time: 0.041 ms
+  4)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.019..0.020 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999999'::text)
+  Planning Time: 0.065 ms
+  Execution Time: 0.037 ms
+  5)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.016..0.017 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999999'::text)
+  Planning Time: 0.065 ms
+  Execution Time: 0.032 ms
+  6)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.017..0.018 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999999'::text)
+  Planning Time: 0.092 ms
+  Execution Time: 0.035 ms
+  7)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.020..0.021 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999999'::text)
+  Planning Time: 0.085 ms
+  Execution Time: 0.042 ms
+  8)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.017..0.018 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999999'::text)
+  Planning Time: 0.068 ms
+  Execution Time: 0.033 ms
+  9)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.017..0.017 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999999'::text)
+  Planning Time: 0.067 ms
+  Execution Time: 0.032 ms
+  10)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.018..0.019 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '999999'::text)
+  Planning Time: 0.068 ms
+  Execution Time: 0.034 ms
+  ```
+  - 3-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM users WHERE user_id='9999999' ```
+  ```
+  1)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.016..0.016 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '9999999'::text)
+  Planning Time: 0.065 ms
+  Execution Time: 0.031 ms
+  2)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.017..0.018 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '9999999'::text)
+  Planning Time: 0.068 ms
+  Execution Time: 0.033 ms
+  3)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.018..0.019 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '9999999'::text)
+  Planning Time: 0.070 ms
+  Execution Time: 0.036 ms
+  4)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.015..0.016 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '9999999'::text)
+  Planning Time: 0.064 ms
+  Execution Time: 0.031 ms
+  5)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.016..0.017 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '9999999'::text)
+  Planning Time: 0.064 ms
+  Execution Time: 0.032 ms
+  6)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.017..0.018 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '9999999'::text)
+  Planning Time: 0.084 ms
+  Execution Time: 0.035 ms
+  7)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.015..0.016 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '9999999'::text)
+  Planning Time: 0.064 ms
+  Execution Time: 0.031 ms
+  8)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.016..0.017 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '9999999'::text)
+  Planning Time: 0.067 ms
+  Execution Time: 0.032 ms
+  9)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.016..0.016 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '9999999'::text)
+  Planning Time: 0.064 ms
+  Execution Time: 0.031 ms
+  10)
+  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.015..0.016 rows=1 loops=1)
+  Index Cond: ((user_id)::text = '9999999'::text)
+  Planning Time: 0.065 ms
+  Execution Time: 0.032 ms
   ```
 
 |    Запрос   |   B-tree  |    HASH    |
 |-------------|-----------|------------|
-|     '999'   |  0.033 ms |  0.025 ms  |
-|   '999999'  |  0.035 ms |  0.027 ms  |
-|  '9999999'  |  0.036 ms |  0.027 ms  |
+|     '999'   |  0.0408 ms|  0.0342 ms |
+|   '999999'  |  0.0418 ms|  0.0352 ms |
+|  '9999999'  |  0.0423 ms|  0.0324 ms  |
 
 **Вывод**
-- эксперимент подтвердил ожидания, что использования идексов через HASH-функции будет быстрее, но и B-tree показал достаточно хороший результат.
+- эксперимент подтвердил ожидания, что использования идексов через HASH-функции будет быстрее, но и B-tree показал достаточно хороший результат, по умолчанию если добавлять индексы будут устанавливаться B-tree индексы, они универсальныу, поддерживают сортировку и могут работать с **LIKE**, когда hash-индексы прменяются только для точного сравнение **=** и нету сортировки и **LIKE**.
 
 **Виды чтения таблиц:**
 
@@ -542,7 +851,7 @@ COMMIT;
 ```
 CREATE TABLE table(
     id SERIAL PRIMARY KEY,
-    value INTEGER CHECK (val >= 0)
+    value INTEGER CHECK (value >= 0)
 )
 BEGIN;
 INSERT INTO table (value) VALUES (1); - База данных сохранит
@@ -621,20 +930,21 @@ ROLLBACK;
 **Уровни Изоляции:**
 - READ UNCOMMITTED - содержит в себе все виды аномалий и не одну из них не решает, на практике он даже не применяется так как по умолчанию стоит изоляция `READ COMMITTED`.
 - READ COMMITTED - решает аномалии на грязное чтение, за счет **MVCC** механизма, делает снипшот каждого **SELECT** в транзакции.
-- REPEATABLE READ - решает все виды аномалий, но только в PostgreSQL, тоже под капотом есть **MVCC** механизм, делает снипшот транзакции перед первым **SELECT** и в этой транзакции не дает изменять данные, в том плане что на глабальном уровне запись в бд изменится, но в транзакцие в этой, так же решает **Lost Update**, транзакция которая первая сделала комит та и сохранится, вторая транзакция выйдет с ошибкой **could not serializer access due to concurrent**.
+- REPEATABLE READ - решает проблемы на грязное чтение, неповторяющтеся чтение и фантомное чтение, но только в PostgreSQL, тоже под капотом есть **MVCC** механизм, делает снапшот транзакции перед первым **SELECT** и в этой транзакции не дает изменять данные, в том плане что на глабальном уровне запись в бд изменится, но в транзакцие в этой, в **Lost Update** он не решает проблему в прямом смысле, он решает конфликт между двумя транзакцями, транзакция которая первая сделала комит та и сохранится, вторая транзакция выйдет с ошибкой **could not serializer access due to concurrent**, но нужно делать **retry** чтобы вторая транзакция тоже выполнилась, если **retry**.
 - SERIALIZABLE - обеспечивает самую строгую изоляцию транзакций. Этот уровень эмулирует последовательное выполнение транзакций для всех зафиксированных транзакций, как если бы транзакции выполнялись одна за другой, последовательно, а не параллельно. Этот уровнь изоляции рабортает как и **REPEATABLE READ**, но дополнительно отслеживает конфликты чтения-записи. При обнаружении конфликта, который нарушил бы сериализуемость, PostgreSQL выбрасывает ошибку: **ERROR: could not serialize access due to read/write dependencies among transactions**.   
 
 - MVCC - это механизм, который применяется для ускорения производительности, устраняет конфликты между чтением и записью.
  - История - идет хранения в двух полях x_min и x_max:
 
-   - **`x_min`** — идентификатор транзакции, которая создала эту версию строки.
-   - **`x_max`** — идентификатор транзакции, которая удалила или изменила.
+   - **`xmin`** — идентификатор транзакции, которая создала эту версию строки.
+   - **`xmax`** — идентификатор транзакции, которая удалила или изменила.
 
-   Когда транзакция читает данные, она смотрит на `x_min` и `x_max` и решает, видит ли она эту версию строки:
+   Когда транзакция читает данные, она смотрит на `xmin` и `xmax` и решает, видит ли она эту версию строки:
+   1. Если `xmin` уже закоммичен и `xmax` ещё не закоммичен то строка **видна**.
+   2. Если `xmax` уже закоммичен то строка **не видна** (удалена или изменена).
+   3. Если `xmin` ещё не закоммичен то строка **не видна** (грязное чтение невозможно).
 
-   1. Если `x_min` уже закоммичен и `x_max` ещё не закоммичен то строка **видна**.
-   2. Если `x_max` уже закоммичен то строка **не видна** (удалена или изменена).
-   3. Если `x_min` ещё не закоммичен то строка **не видна** (грязное чтение невозможно).
+   Но это только для READ COMMITTED, если мы возьмем REPEATABLE READ, то транзакция запомнинает **снапшот** в начале, в течение всей транзакции она видит **только те строки**, которые были закоммичены **до** момента начала транзакции, а строки, закоммиченные **после** начала транзакции — **не видны** и поэтому этот уровнь изоляции решает такие проблемы как неповторяющиеся чтение и фантомное чтение.
 
  - **Снимок (Snapshot)** - озночает что каждый SQL-запрос видит снимок данных (версию базы данных), сделанный некоторое время назад, независимо от текущего состояния базовых данных.
  - В `READ COMMITTED` — **перед каждым запросом** (`SELECT`).
@@ -800,6 +1110,9 @@ COMMIT;
 **Цель**
 - Показать, как уровень изоляции REPEATABLE READ может решить проблему с аномалией потерянное обновление.
 
+**Ожидания**
+- При уровне изоляции REPEATABLE READ вторая транзакция не сможет обновить строку, изменённую первой. Вместо тихой перезаписи она получит ошибку could not serialize access due to concurrent update.
+
 **Выполнение:**
 
 - Изоляция: REPEATABLE READ
@@ -832,7 +1145,7 @@ COMMIT;
  - 2-транзакция: выполнилась, вторая транзакция выполнилась второй и она проиграла и получила ошибку ```ERROR:  could not serialize access due to concurrent update```.
 
 **Вывод**
-- Мы потеряли 100 рублей, ожидания были 1200
+- Уровень изоляции REPEATABLE READ не защищает от потерянного обновления автоматически. Вместо этого он обнаруживает конфликт при параллельных UPDATE и выбрасывает ошибку: ```ERROR:  could not serialize access due to concurrent update```. Это лучше, чем тихая потеря данных и перезапись в **READ UNCOMMITTED либо READ COMMITTED**, но требует от приложения явной обработки: повторного выполнения транзакции (retry).
 
 ## Блокировки и дедлоки:
 
