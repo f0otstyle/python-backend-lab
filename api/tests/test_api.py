@@ -74,3 +74,103 @@ def test_ordering_a_taxi(test_client: TestClient, test_user):
         )
     body = result.json()
     assert result.status_code == 201
+    assert isinstance(body["from_address"], str)
+    assert isinstance(body["to_address"], str)
+    assert isinstance(body["price"], int)
+    assert body["price"] == 10
+    assert body["to_address"] == 'Ватутино'
+    assert body["from_address"] == 'Маркса 6/1'
+
+
+def test_order_search(test_client: TestClient, test_user):
+    request_data = {
+                'from_address': 'Маркса 6/1',
+                'to_address': 'Ватутино',
+                'price': 10
+        }
+    headers = {
+            "Idempotency-Key": "123"
+        }
+
+    login_response = test_client.post('/login', json=USER)
+    assert login_response.status_code == 200
+
+    result = test_client.post(
+            '/taxi',
+            json=request_data,
+            headers=headers
+        )
+    assert result.status_code == 201
+
+    order_id = result.json()["id"]
+
+    result = test_client.get(f'/taxi/{order_id}')
+    assert result.status_code == 200
+
+
+def test_idempotency(test_client: TestClient, test_user):
+    request_data = {
+                    'from_address': 'Маркса 6/1',
+                    'to_address': 'Ватутино',
+                    'price': 10
+            }
+    headers = {
+            "Idempotency-Key": "123"
+        }
+
+    login_response = test_client.post('/login', json=USER)
+    assert login_response.status_code == 200
+
+    responce_one = test_client.post(
+            '/taxi',
+            json=request_data,
+            headers=headers
+        )
+    responce_one_id = responce_one.json()['id']
+    assert responce_one.status_code == 201
+
+    responce_two = test_client.post(
+                '/taxi',
+                json=request_data,
+                headers=headers
+            )
+    responce_two_id = responce_two.json()['id']
+    assert responce_two.status_code == 201
+    assert responce_one_id == responce_two_id
+
+
+def test_order_delete(test_client: TestClient, test_user):
+    request_data = {
+                'from_address': 'Маркса 6/1',
+                'to_address': 'Ватутино',
+                'price': 10
+        }
+    headers = {
+            "Idempotency-Key": "123"
+        }
+
+    login_response = test_client.post('/login', json=USER)
+    assert login_response.status_code == 200
+
+    result = test_client.post(
+            '/taxi',
+            json=request_data,
+            headers=headers
+        )
+    assert result.status_code == 201
+
+    order_id = result.json()["id"]
+
+    result = test_client.delete(f'/taxi/{order_id}')
+    assert result.status_code == 204
+
+    result = test_client.get(f'/taxi/{order_id}')
+    assert result.status_code == 404
+
+
+def test_history_order_taxi(test_client: TestClient, test_user):
+    login_response = test_client.post('/login', json=USER)
+    assert login_response.status_code == 200
+
+    result = test_client.get('/history/')
+    assert result.status_code == 200

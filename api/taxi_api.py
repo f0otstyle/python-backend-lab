@@ -69,7 +69,7 @@ async def init_db():
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS rides (
             id SERIAL PRIMARY KEY,
-            order_id INTEGER REFERENCES order_taxi(id),
+            order_id INTEGER REFERENCES order_taxi(id) ON DELETE CASCADE,
             driver_id INTEGER REFERENCES drivers(id),
             user_id INTEGER REFERENCES users(id),
             started_at TIMESTAMP DEFAULT NOW(),

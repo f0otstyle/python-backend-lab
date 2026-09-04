@@ -332,10 +332,14 @@ def func():
 
 **pytest-тесты**:
 ```
-tests/test_api.py::test_list_of_orders PASSED                                                                                      [ 25%]
-tests/test_api.py::test_taxi_drivers PASSED                                                                                        [ 50%]
-tests/test_api.py::test_top_up_your_card PASSED                                                                                    [ 75%]
-tests/test_api.py::test_ordering_a_taxi PASSED                                                                                     [100%]
+tests/test_api.py::test_list_of_orders PASSED                                                                                      [ 12%]
+tests/test_api.py::test_taxi_drivers PASSED                                                                                        [ 25%]
+tests/test_api.py::test_top_up_your_card PASSED                                                                                    [ 37%]
+tests/test_api.py::test_ordering_a_taxi PASSED                                                                                     [ 50%]
+tests/test_api.py::test_order_search PASSED                                                                                        [ 62%]
+tests/test_api.py::test_idempotency PASSED                                                                                         [ 75%]
+tests/test_api.py::test_order_delete PASSED                                                                                        [ 87%]
+tests/test_api.py::test_history_order_taxi PASSED                                                                                  [100%]
 ```
 
 
