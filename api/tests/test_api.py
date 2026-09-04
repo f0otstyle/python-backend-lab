@@ -8,7 +8,8 @@ USER = {'username': 'Саша',
 
 @pytest.fixture
 def test_client():
-    return TestClient(app)
+    with TestClient(app) as client:
+        yield client
 
 
 @pytest.fixture
@@ -19,6 +20,7 @@ def test_user(test_client: TestClient):
         return 1
     elif registrate_response.status_code == 201:
         return 1
+
 
 def test_list_of_orders(test_client: TestClient):
     result = test_client.get('/taxi')

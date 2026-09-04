@@ -330,6 +330,14 @@ def func():
 | POST | `/pay/{user_id}` | Пополнить баланс |
 | GET | `/history` | История заказов |
 
+**pytest-тесты**:
+```
+tests/test_api.py::test_list_of_orders PASSED                                                                                      [ 25%]
+tests/test_api.py::test_taxi_drivers PASSED                                                                                        [ 50%]
+tests/test_api.py::test_top_up_your_card PASSED                                                                                    [ 75%]
+tests/test_api.py::test_ordering_a_taxi PASSED                                                                                     [100%]
+```
+
 
 ## Запуск всех экспериментов
 
