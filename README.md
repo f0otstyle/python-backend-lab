@@ -430,7 +430,3 @@ pytest -v
 cd api
 # 2. Поднять всё через Docker
 docker-compose up -d --build
-
-# 3. Проверить работу
-curl http://localhost:8080/taxi
-```

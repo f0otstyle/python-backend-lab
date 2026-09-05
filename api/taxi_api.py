@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from error_handler import OrderError, SearchError
 from logging_log import logger, log
-from authx import AuthXConfig, AuthX
+from authx import AuthXConfig, AuthX, TokenPayload
 import asyncio
 import asyncpg
 import bcrypt
@@ -42,7 +42,7 @@ async def init_db():
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
-            name VARCHAR NOT NULL,
+            name VARCHAR NOT NULL UNIQUE,
             password VARCHAR NOT NULL
         )
         """)
@@ -57,13 +57,14 @@ async def init_db():
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS order_taxi (
             id SERIAL PRIMARY KEY,
-            idempotency_key VARCHAR NOT NULL UNIQUE,
+            idempotency_key VARCHAR NOT NULL,
             from_address VARCHAR,
             to_address VARCHAR NOT NULL,
             price NUMERIC NOT NULL CHECK (price > 0),
-            created_at TIMESTAMP DEFAULT NOW(),
+            created_at TIMESTAMPTZ DEFAULT NOW(),
             driver_id INTEGER REFERENCES drivers(id),
-            user_id INTEGER REFERENCES users(id)
+            user_id INTEGER REFERENCES users(id),
+            UNIQUE (user_id, idempotency_key)
         )
         """)
         await conn.execute("""
@@ -72,14 +73,14 @@ async def init_db():
             order_id INTEGER REFERENCES order_taxi(id) ON DELETE CASCADE,
             driver_id INTEGER REFERENCES drivers(id),
             user_id INTEGER REFERENCES users(id),
-            started_at TIMESTAMP DEFAULT NOW(),
-            finished_at TIMESTAMP,
+            started_at TIMESTAMPTZ DEFAULT NOW(),
+            finished_at TIMESTAMPTZ,
             duration INTEGER
             )
         """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS taxi_card (
-            user_id INTEGER REFERENCES users(id),
+            user_id INTEGER PRIMARY KEY REFERENCES users(id),
             balance NUMERIC NOT NULL CHECK (balance >= 0) DEFAULT 0
             )
         """)
@@ -97,7 +98,7 @@ app = FastAPI(lifespan=lifespan)
 
 
 config = AuthXConfig(
-    JWT_SECRET_KEY='SECRET-KEY',
+    JWT_SECRET_KEY=os.getenv('JWT_SECRET_KEY', 'SECRET-KEY'),
     JWT_TOKEN_LOCATION=['cookies'],
     JWT_ACCESS_COOKIE_NAME='my_cookie',
     JWT_COOKIE_CSRF_PROTECT=False,
@@ -178,7 +179,7 @@ async def registrate(
         new_order = await conn.fetchrow('''
             INSERT INTO users (name, password)
             VALUES ($1, $2)
-            RETURNING id, name, password
+            RETURNING id, name
             ''', username, hashed_password)
         logger.info(f'Пользователь создан {new_order}')
         return {"message": "Пользователь создан"}
@@ -218,7 +219,9 @@ async def login(
         response.set_cookie(
                 key=config.JWT_ACCESS_COOKIE_NAME,
                 value=token,
-                # httponly=True,
+                httponly=True,
+                secure=True,
+                samesite='lax',
                 )
         logger.info('Успешный вход')
         return {"message": "Успешный вход"}
@@ -249,16 +252,19 @@ async def create_driver(
     '''Добавляем нового водителя'''
     driver_name = driver.name
     driver_car = driver.car
-    async with pool.acquire() as conn:
-        new_driver = await conn.fetchrow('''
-            INSERT INTO drivers (name, car)
-            VALUES ($1, $2)
-            RETURNING id, name, car
-        ''', driver_name, driver_car)
+    try:
+        async with pool.acquire() as conn:
+            new_driver = await conn.fetchrow('''
+                INSERT INTO drivers (name, car)
+                VALUES ($1, $2)
+                RETURNING id, name, car
+            ''', driver_name, driver_car)
 
-        logger.info(f'Водитель создан: {new_driver["name"]}')
-        return dict(new_driver)
-
+            logger.info(f'Водитель создан: {new_driver["name"]}')
+            return dict(new_driver)
+    except asyncpg.PostgresError:
+        logger.exception('Ошибка не подключения к бд')
+        raise HTTPException(status_code=500, detail="Ошибка базы данных")
 
 @app.get('/taxi', status_code=HTTPStatus.OK)
 @log
@@ -286,9 +292,11 @@ async def ordering_a_taxi(
     orders: OrderCreate,
     request: Request,
     idempotency_key: str = Header(None, alias="Idempotency-Key"),
-    pool: asyncpg.Pool = Depends(get_pool)
+    pool: asyncpg.Pool = Depends(get_pool),
+    token_data: TokenPayload = Depends(security.access_token_required)
         ):
     '''Создаем заказ'''
+    user_id = int(token_data.sub)
     from_address = orders.from_address
     to_address = orders.to_address
     price = orders.price
@@ -300,209 +308,231 @@ async def ordering_a_taxi(
         )
     current_time = datetime.now(timezone.utc).timestamp()
     async with pool.acquire() as conn:
-        existing = await conn.fetchrow('''
-            SELECT * FROM order_taxi WHERE idempotency_key=$1
-        ''', idempotency_key)
+        async with conn.transaction():
+            existing = await conn.fetchrow('''
+                SELECT id, idempotency_key, from_address, to_address, price,
+                    user_id, driver_id, created_at
+                FROM order_taxi WHERE idempotency_key=$1
+            ''', idempotency_key)
 
-        if existing:
-            logger.info(f"Повторный запрос с ключом {idempotency_key}")
-            return JSONResponse(
-                status_code=HTTPStatus.CREATED,
-                content=jsonable_encoder(dict(existing)),
-                headers={"Location": f"/taxi/{existing['id']}"}
-            )
-
-        duplicate = await conn.fetchrow('''
-            SELECT * FROM order_taxi WHERE to_address=$1
-        ''', to_address)
-
-        if duplicate:
-            created_at = duplicate['created_at'].timestamp()
-            time_diff = current_time - created_at
-            if time_diff < TIME:
-                logger.warning(
-                    f'Попытка создать дубликат заказа для {to_address} (прошло {time_diff:.1f} с)'
-                    )
-                raise OrderError()
-            else:
-                logger.info('Можно сделать новый заказ')
-        try:
-            new_order = await conn.fetchrow('''
-                INSERT INTO order_taxi (
-                idempotency_key, from_address, to_address, price
+            if existing:
+                logger.info(f"Повторный запрос с ключом {idempotency_key}")
+                return JSONResponse(
+                    status_code=HTTPStatus.CREATED,
+                    content=jsonable_encoder(dict(existing)),
+                    headers={"Location": f"/taxi/{existing['id']}"}
                 )
-                VALUES ($1, $2, $3, $4)
-                RETURNING id, idempotency_key, from_address, to_address, price,
-                created_at''', idempotency_key, from_address, to_address, price)
-        except asyncpg.UniqueViolationError:
-            existing = await conn.fetchrow(
-                'SELECT * FROM order_taxi WHERE idempotency_key = $1',
-                idempotency_key
-            )
-            return JSONResponse(
-                status_code=HTTPStatus.CREATED,
-                content=jsonable_encoder(dict(existing)),
-                headers={"Location": f"/taxi/{existing['id']}"}
-            )
 
-        appoint = await taxi_to_appoint(new_order['id'], pool)
+            duplicate = await conn.fetchrow('''
+                SELECT * FROM order_taxi WHERE to_address=$1 and user_id=$2
+            ''', to_address, user_id)
 
-        if appoint:
-            logger.info(f'Водитель назначен на заказ {new_order["id"]}')
-            drive = await taxi_ride(new_order['id'], pool)
-            if drive:
-                pay = await pay_to_taxi(new_order['id'], pool)
-                logger.info(
-                    f'Заказ {new_order["id"]} закончен, оплата'
-                    )
-                if pay:
-                    logger.info(f'Заказ {new_order["id"]}, успешно оплачен')
-                else:
-                    logger.info(
-                        f'Заказ {new_order["id"]}, оплата не прошла'
+            if duplicate:
+                created_at = duplicate['created_at'].timestamp()
+                time_diff = current_time - created_at
+                if time_diff < TIME:
+                    logger.warning(
+                        f'Попытка создать дубликат заказа для {to_address} (прошло {time_diff:.1f} с)'
                         )
-            else:
-                logger.info(f'Поездка не закончена по заказ {new_order["id"]}')
-        else:
-            logger.warning(f'Заказ {new_order["id"]} создан без водителя')
+                    raise OrderError()
+                else:
+                    logger.info('Можно сделать новый заказ')
+            try:
+                new_order = await conn.fetchrow('''
+                    INSERT INTO order_taxi (
+                    idempotency_key, from_address, to_address, price,
+                    user_id)
+                    VALUES ($1, $2, $3, $4, $5)
+                    RETURNING id, idempotency_key, from_address, to_address, price,
+                    user_id, driver_id, created_at''', idempotency_key, from_address, to_address, price, user_id)
+            except asyncpg.UniqueViolationError:
+                existing = await conn.fetchrow(
+                    'SELECT id, idempotency_key, from_address, to_address, price, user_id, driver_id, created_at FROM order_taxi WHERE idempotency_key = $1',
+                    idempotency_key
+                )
+                return JSONResponse(
+                    status_code=HTTPStatus.CREATED,
+                    content=jsonable_encoder(dict(existing)),
+                    headers={"Location": f"/taxi/{existing['id']}"}
+                )
 
-        logger.info(f'Новый заказ сделан с ID {new_order["id"]}')
-        return JSONResponse(
-                status_code=HTTPStatus.CREATED,
-                content=jsonable_encoder(dict(new_order)),
-                headers={"Location": f"/taxi/{new_order['id']}"}
-            )
+            appoint = await taxi_to_appoint(new_order['id'], conn)
+
+            if appoint:
+                logger.info(f'Водитель назначен на заказ {new_order["id"]}')
+
+                drive = await taxi_ride(new_order['id'], conn)
+                if drive:
+                    pay = await pay_to_taxi(new_order['id'], conn)
+                    logger.info(
+                        f'Заказ {new_order["id"]} закончен, оплата'
+                        )
+                    if pay:
+                        logger.info(f'Заказ {new_order["id"]}, успешно оплачен')
+                    else:
+                        logger.info(
+                            f'Заказ {new_order["id"]}, оплата не прошла'
+                            )
+                else:
+                    logger.info(f'Поездка не закончена по заказ {new_order["id"]}')
+            else:
+                logger.warning(f'Заказ {new_order["id"]} создан без водителя')
+
+            order = await conn.fetchrow('''
+                SELECT id, idempotency_key, from_address, to_address, price,
+                    user_id, driver_id, created_at
+                FROM order_taxi
+                WHERE id = $1
+            ''', new_order['id'])
+
+            logger.info(f'Новый заказ сделан с ID {order["id"]}')
+            return JSONResponse(
+                    status_code=HTTPStatus.CREATED,
+                    content=jsonable_encoder(dict(order)),
+                    headers={"Location": f"/taxi/{order['id']}"}
+                )
 
 
 @log
 async def taxi_to_appoint(
     order_id: int,
-    pool: asyncpg.Pool
+    conn: asyncpg.Connection
         ):
     '''Назначаем водителя для поездки'''
-    async with pool.acquire() as conn:
-        driver = await conn.fetchrow('SELECT id FROM drivers ORDER BY random() LIMIT 1')
-        if not driver:
-            return None
+    driver = await conn.fetchrow('SELECT id FROM drivers ORDER BY random() LIMIT 1')
+    if not driver:
+        return None
 
-        result = await conn.fetchrow('''
-            UPDATE order_taxi
-            SET driver_id = $1
-            WHERE id = $2 AND driver_id IS NULL
-            RETURNING id, from_address, to_address, driver_id
-        ''', driver["id"], order_id)
+    result = await conn.fetchrow('''
+        UPDATE order_taxi
+        SET driver_id = $1
+        WHERE id = $2 AND driver_id IS NULL
+        RETURNING id, from_address, to_address, driver_id
+    ''', driver["id"], order_id)
 
-        if not result:
-            return None
+    if not result:
+        return None
 
-        return dict(result) if result else None
+    return dict(result) if result else None
 
 
 @log
 async def taxi_ride(
     order_id: int,
-    pool: asyncpg.Pool
+    conn: asyncpg.Connection
         ):
     '''Симуляция поездки'''
-    async with pool.acquire() as conn:
-        order = await conn.fetchrow('''
-            SELECT * FROM order_taxi WHERE id=$1
-        ''', order_id)
+    order = await conn.fetchrow('''
+        SELECT * FROM order_taxi WHERE id=$1
+    ''', order_id)
 
-        if not order:
-            logger.warning(f'Заказ {order_id} не найден или нет водителя')
-            return None
+    if not order:
+        logger.warning(f'Заказ {order_id} не найден или нет водителя')
+        return None
 
-        logger.info(f'Поездка по заказу {order_id} началась')
+    logger.info(f'Поездка по заказу {order_id} началась')
 
-        duration = random.randint(2, 5)
-        await asyncio.sleep(duration)
+    start_time = datetime.now(timezone.utc)
+    duration = 1
+    await asyncio.sleep(duration)
+    end_time = datetime.now(timezone.utc)
 
-        ride = await conn.fetchrow('''
-            INSERT INTO rides (order_id, driver_id, user_id, duration, finished_at)
-            VALUES ($1, $2, $3, $4, NOW())
-            RETURNING id, order_id, driver_id, duration
-        ''', order_id, order['driver_id'], order['user_id'], duration)
+    ride = await conn.fetchrow('''
+        INSERT INTO rides (order_id, driver_id, user_id, started_at, finished_at)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, order_id, driver_id, duration
+    ''', order_id, order['driver_id'], order['user_id'], start_time, end_time)
 
-        logger.info(f'Поездка по заказу {order_id} завершена за {duration} сек')
+    logger.info(f'Поездка по заказу {order_id} завершена за {duration} сек')
 
-        return dict(ride)
+    return dict(ride)
 
 
 @log
 async def pay_to_taxi(
     order_id: int,
-    pool: asyncpg.Pool
+    conn: asyncpg.Connection
         ):
     '''Оплата поездки'''
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            order = await conn.fetchrow('''
-                SELECT * FROM order_taxi WHERE id=$1
-            ''', order_id)
-            if not order:
-                logger.warning(f'Заказ {order_id} не найден или нет водителя')
-                return None
+    async with conn.transaction():
+        order = await conn.fetchrow('''
+            SELECT * FROM order_taxi WHERE id=$1
+        ''', order_id)
+        if not order:
+            logger.warning(f'Заказ {order_id} не найден или нет водителя')
+            return None
 
-            card = await conn.fetchrow('''
-                SELECT balance FROM taxi_card WHERE user_id = $1
-            ''', order['user_id'])
+        card = await conn.fetchrow('''
+            SELECT balance FROM taxi_card WHERE user_id = $1 FOR UPDATE
+        ''', order['user_id'])
 
-            if not card:
-                logger.warning(f'У пользователя {order["user_id"]} нет карты')
-                return False
+        if not card:
+            logger.warning(f'У пользователя {order["user_id"]} нет карты')
+            return False
 
-            if card['balance'] < order['price']:
-                logger.warning('Недостаточно средств на карте')
-                return False
+        if card['balance'] < order['price']:
+            logger.warning('Недостаточно средств на карте')
+            return False
 
-            await conn.execute('''
-                UPDATE taxi_card
-                SET balance = balance - $1
-                WHERE user_id = $2
-            ''', order['price'], order['user_id'])
+        await conn.execute('''
+            UPDATE taxi_card
+            SET balance = balance - $1
+            WHERE user_id = $2
+        ''', order['price'], order['user_id'])
 
-            await conn.execute('''
-                UPDATE drivers
-                SET money = money + $1
-                WHERE id = $2
-                ''', order['price'], order['driver_id'])
+        await conn.execute('''
+            UPDATE drivers
+            SET money = money + $1
+            WHERE id = $2
+            ''', order['price'], order['driver_id'])
 
-            logger.info(f'Списано {order["price"]} с карты пользователя {order["user_id"]}')
-            return True
+        logger.info(f'Списано {order["price"]} с карты пользователя {order["user_id"]}')
+        return True
 
 
-@app.post('/pay/{user_id}', status_code=HTTPStatus.OK)
+@app.post('/pay/{user_id}',
+          status_code=HTTPStatus.OK,
+          dependencies=[Depends(security.access_token_required)])
 async def top_up_your_card(
     payload: MoneySchema,
     user_id: int,
     pool: asyncpg.Pool = Depends(get_pool)
         ):
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            money = payload.money
-            card = await conn.fetchrow('''
-                SELECT * FROM taxi_card WHERE user_id = $1
-            ''', user_id)
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                money = payload.money
+                card = await conn.fetchrow('''
+                    SELECT * FROM taxi_card WHERE user_id = $1
+                ''', user_id)
 
-            if card:
-                await conn.execute('''
-                    UPDATE taxi_card
-                    SET balance = balance + $1
-                    WHERE user_id = $2
-                ''', money, user_id)
-            else:
-                await conn.execute('''
-                    INSERT INTO taxi_card (user_id, balance)
-                    VALUES ($1, $2)
-                ''', user_id, money)
+                if card:
+                    await conn.execute('''
+                        UPDATE taxi_card
+                        SET balance = balance + $1
+                        WHERE user_id = $2
+                    ''', money, user_id)
+                else:
+                    await conn.execute('''
+                        INSERT INTO taxi_card (user_id, balance)
+                        VALUES ($1, $2)
+                    ''', user_id, money)
 
-            logger.info(f'Баланс пользователя {user_id} пополнен на {money}')
-            return {"message": f"Баланс пополнен на {money}"}
+                logger.info(f'Баланс пользователя {user_id} пополнен на {money}')
+                return {"message": f"Баланс пополнен на {money}"}
+
+    except asyncpg.ForeignKeyViolationError:
+        raise HTTPException(status_code=500, detail="Пользователь не найден")
+    except asyncpg.CheckViolationError:
+        raise HTTPException(status_code=500, detail="Некорректная сумма")
+    except Exception:
+        logger.exception(f"Неожиданная ошибка")
+        raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
 
 
 @app.get('/taxi/{order_id}',
-         status_code=HTTPStatus.OK
+         status_code=HTTPStatus.OK,
+         dependencies=[Depends(security.access_token_required)]
          )
 @log
 async def order_search(
@@ -526,7 +556,9 @@ async def order_search(
 
 
 @app.delete('/taxi/{order_id}',
-            status_code=HTTPStatus.NO_CONTENT)
+            status_code=HTTPStatus.NO_CONTENT,
+            dependencies=[Depends(security.access_token_required)]
+            )
 @log
 async def order_delete(
     order_id: int,
