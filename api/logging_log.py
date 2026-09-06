@@ -1,3 +1,4 @@
+import sys
 from time import perf_counter
 import logging
 from typing import Callable
@@ -7,9 +8,7 @@ from functools import wraps
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    filename='taxi.log',
-    encoding='utf-8',
-    filemode='a',
+    stream=sys.stdout,
 )
 
 logger = logging.getLogger('api')

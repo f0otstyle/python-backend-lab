@@ -17,4 +17,4 @@ sync_client.log
 *.log
 
 test.txt
-.sqlite
+db.sqlite3

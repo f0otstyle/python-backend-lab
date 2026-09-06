@@ -1,13 +1,12 @@
-FROM python:3.12
+FROM python:3.12-slim
 
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 
 COPY taxi_api.py .
-COPY models.py .
 COPY error_handler.py .
 COPY logging_log.py .
 

@@ -1,11 +1,11 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 import random
 from fastapi import FastAPI, HTTPException, Request, Header, Depends, Response
 from http import HTTPStatus
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-# from models import db_pool
 from contextlib import asynccontextmanager
 from error_handler import OrderError, SearchError
 from logging_log import logger, log
@@ -101,6 +101,7 @@ config = AuthXConfig(
     JWT_SECRET_KEY=os.getenv('JWT_SECRET_KEY', 'SECRET-KEY'),
     JWT_TOKEN_LOCATION=['cookies'],
     JWT_ACCESS_COOKIE_NAME='my_cookie',
+    JWT_ACCESS_TOKEN_EXPIRES=timedelta(days=1),
     JWT_COOKIE_CSRF_PROTECT=False,
     )
 
@@ -111,7 +112,7 @@ security: AuthX = AuthX(config=config)
 class OrderCreate(BaseModel):
     from_address: str
     to_address: str
-    price: float
+    price: Decimal
 
 
 class UserRegisterSchema(BaseModel):
@@ -150,8 +151,8 @@ async def search_error(request: Request, exc: SearchError):
         })
 
 
-async def get_pool():
-    return app.state.db
+async def get_pool(request: Request):
+    return request.app.state.db
 
 
 @app.post('/registrate', status_code=HTTPStatus.CREATED)
@@ -291,7 +292,7 @@ async def list_of_orders(pool: asyncpg.Pool = Depends(get_pool)):
 async def ordering_a_taxi(
     orders: OrderCreate,
     request: Request,
-    idempotency_key: str = Header(None, alias="Idempotency-Key"),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     pool: asyncpg.Pool = Depends(get_pool),
     token_data: TokenPayload = Depends(security.access_token_required)
         ):
@@ -399,7 +400,7 @@ async def taxi_to_appoint(
     conn: asyncpg.Connection
         ):
     '''Назначаем водителя для поездки'''
-    driver = await conn.fetchrow('SELECT id FROM drivers ORDER BY random() LIMIT 1')
+    driver = await conn.fetchrow('SELECT id FROM drivers ORDER BY random() LIMIT 1 FOR UPDATE SKIP LOCKED')
     if not driver:
         return None
 
@@ -578,7 +579,7 @@ async def order_delete(
     raise SearchError()
 
 
-@app.get('/history/',
+@app.get('/history',
          status_code=HTTPStatus.OK,
          dependencies=[Depends(security.access_token_required)])
 @log
