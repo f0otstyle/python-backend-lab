@@ -332,14 +332,15 @@ def func():
 
 **pytest-тесты**:
 ```
-tests/test_api.py::test_list_of_orders PASSED                                                                                      [ 12%]
-tests/test_api.py::test_taxi_drivers PASSED                                                                                        [ 25%]
-tests/test_api.py::test_top_up_your_card PASSED                                                                                    [ 37%]
-tests/test_api.py::test_ordering_a_taxi PASSED                                                                                     [ 50%]
-tests/test_api.py::test_order_search PASSED                                                                                        [ 62%]
-tests/test_api.py::test_idempotency PASSED                                                                                         [ 75%]
-tests/test_api.py::test_order_delete PASSED                                                                                        [ 87%]
-tests/test_api.py::test_history_order_taxi PASSED                                                                                  [100%]
+tests/test_api.py::test_list_of_orders PASSED                                                                                                                 [ 11%]
+tests/test_api.py::test_taxi_drivers PASSED                                                                                                                   [ 22%]
+tests/test_api.py::test_top_up_your_card PASSED                                                                                                               [ 33%]
+tests/test_api.py::test_ordering_a_taxi PASSED                                                                                                                [ 44%]
+tests/test_api.py::test_order_search PASSED                                                                                                                   [ 55%]
+tests/test_api.py::test_idempotency PASSED                                                                                                                    [ 66%]
+tests/test_api.py::test_order_delete PASSED                                                                                                                   [ 77%]
+tests/test_api.py::test_history_order_taxi PASSED                                                                                                             [ 88%]
+tests/test_api.py::test_unsupported_media_type PASSED                                                                                                         [100%]
 ```
 
 
@@ -430,3 +431,5 @@ pytest -v
 cd api
 # 2. Поднять всё через Docker
 docker-compose up -d --build
+# Запуск тестов
+pytest -v
