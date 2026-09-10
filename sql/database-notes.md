@@ -295,446 +295,292 @@ FROM group_class;
 
 ## Эксперимент №1 замерим поиск записи в таблице без индекса и с индексом на таблице с 10 млн с B-tree:
 **Ожидания**
-- Поиск элемента по id занимает где-то 0.01-0.03 секунды, поэтому стоит предположить что и поиск по полю с индекосм будет где-то в таком же диапазоне  по той причине, что первичный ключ заиндексирован, а поиск без индекса больше на 200-400 мс.
+- Поиск элемента по id занимает где-то 0.3-1 мс, поэтому стоит предположить что и поиск по полю с индекосм будет где-то в таком же диапазоне по той причине, что первичный ключ заиндексирован, а поиск без индекса больше на 200-400 мс.
   
   **Без индексов**
 
-  - 1-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='999' ```
   ```
-  Gather  (cost=1000.00..107136.93 rows=1 width=11) (actual time=2.621..316.306 rows=1 loops=1)
+  1)
+  Gather  (cost=1000.00..136417.43 rows=1 width=37) (actual time=2.856..388.012 rows=1 loops=1)
    Workers Planned: 2
    Workers Launched: 2
-   ->  Parallel Seq Scan on orders  (cost=0.00..106136.83 rows=1 width=11) (actual time=190.069..292.856 rows=0 loops=3)
-         Filter: ((user_id)::text = '999'::text)
+   Buffers: shared hit=385 read=82949
+   ->  Parallel Seq Scan on orders  (cost=0.00..135417.33 rows=1 width=37) (actual time=240.410..367.494 rows=0 loops=3)
+         Filter: (value = '70dae82961365ae645094c6d198f4ff7'::text)
          Rows Removed by Filter: 3333333
-    Planning Time: 0.056 ms
-    JIT:
-      Functions: 6
-      Options: Inlining false, Optimization false, Expressions true, Deforming true
-      Timing: Generation 0.744 ms, Inlining 0.000 ms, Optimization 0.576 ms, Emission 8.038 ms, Total 9.357 ms
-    Execution Time: 316.629 ms
-  ```
-  - Объяснение - PostgreSQL использовал 2 рабочих процесса, параллельно последовательно сканировал	каждый воркер.
-
-  - 2-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='999999'```
-  ```
-  Gather  (cost=1000.00..107136.93 rows=1 width=11) (actual time=341.365..346.607 rows=1 loops=1)
-   Workers Planned: 2
-   Workers Launched: 2
-   ->  Parallel Seq Scan on orders  (cost=0.00..106136.83 rows=1 width=11) (actual time=228.513..319.751 rows=0 loops=3)
-         Filter: ((user_id)::text = '999999'::text)
-         Rows Removed by Filter: 3333333
-  Planning Time: 0.109 ms
+         Buffers: shared hit=385 read=82949
+  Planning Time: 0.065 ms
   JIT:
    Functions: 6
    Options: Inlining false, Optimization false, Expressions true, Deforming true
-   Timing: Generation 0.856 ms, Inlining 0.000 ms, Optimization 0.776 ms, Emission 11.713 ms, Total 13.345 ms
-  Execution Time: 346.994 ms
-  ```
-  - Объяснение - PostgreSQL использовал 2 рабочих процесса, параллельно последовательно сканировал	каждый воркер.
+   Timing: Generation 0.661 ms, Inlining 0.000 ms, Optimization 0.647 ms, Emission 7.717 ms, Total 9.024 ms
+  Execution Time: 388.344 ms
 
-  - 3-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='9999999' ```
-  ```
-  Gather  (cost=1000.00..107136.93 rows=1 width=11) (actual time=375.798..381.694 rows=1 loops=1)
+  2)
+  Gather  (cost=1000.00..136417.43 rows=1 width=37) (actual time=2.156..343.950 rows=1 loops=1)
    Workers Planned: 2
    Workers Launched: 2
-   ->  Parallel Seq Scan on orders  (cost=0.00..106136.83 rows=1 width=11) (actual time=356.509..356.510 rows=0 loops=3)
-         Filter: ((user_id)::text = '9999999'::text)
+   Buffers: shared hit=193 read=83141
+   ->  Parallel Seq Scan on orders  (cost=0.00..135417.33 rows=1 width=37) (actual time=211.739..323.954 rows=0 loops=3)
+         Filter: (value = '3f18c8ab61407761cd3c1b04b9d94c65'::text)
          Rows Removed by Filter: 3333333
-  Planning Time: 0.063 ms
+         Buffers: shared hit=193 read=83141
+  Planning Time: 0.049 ms
   JIT:
    Functions: 6
    Options: Inlining false, Optimization false, Expressions true, Deforming true
-   Timing: Generation 0.794 ms, Inlining 0.000 ms, Optimization 0.673 ms, Emission 8.818 ms, Total 10.285 ms
-  Execution Time: 382.049 ms
-  ```
+   Timing: Generation 0.719 ms, Inlining 0.000 ms, Optimization 0.606 ms, Emission 7.933 ms, Total 9.258 ms
+  Execution Time: 344.141 ms
 
-  - Объяснение - PostgreSQL использовал 2 рабочих процесса, параллельно последовательно сканировал	каждый воркер.
+  3)
+  Gather  (cost=1000.00..136417.43 rows=1 width=37) (actual time=1.992..346.997 rows=1 loops=1)
+   Workers Planned: 2
+   Workers Launched: 2
+   Buffers: shared hit=289 read=83045
+   ->  Parallel Seq Scan on orders  (cost=0.00..135417.33 rows=1 width=37) (actual time=213.314..326.959 rows=0 loops=3)
+         Filter: (value = 'cacc70d9c56d038a5540222bddd5cef7'::text)
+         Rows Removed by Filter: 3333333
+         Buffers: shared hit=289 read=83045
+  Planning Time: 0.047 ms
+  JIT:
+   Functions: 6
+   Options: Inlining false, Optimization false, Expressions true, Deforming true
+   Timing: Generation 0.643 ms, Inlining 0.000 ms, Optimization 0.503 ms, Emission 6.866 ms, Total 8.011 ms
+  Execution Time: 347.186 ms
+  ```
 
   **С индексами**
   ```
-  Установим индексы: CREATE INDEX idx_user_id ON orders(user_id);
+  1)
+  Index Scan using idx_btree_value on orders  (cost=0.56..8.58 rows=1 width=37) (actual time=1.732..1.733 rows=1 loops=1)
+  Index Cond: (value = '70dae82961365ae645094c6d198f4ff7'::text)
+  Buffers: shared read=5
+  Planning:
+  Buffers: shared hit=73 read=27
+  Planning Time: 0.691 ms
+  Execution Time: 1.769 ms
+  2)
+  Index Scan using idx_btree_value on orders  (cost=0.56..8.58 rows=1 width=37) (actual time=1.414..1.416 rows=1 loops=1)
+  Index Cond: (value = '5cea12ace5976cfff6d189dff926dd4d'::text)
+  Buffers: shared hit=3 read=2
+  Planning Time: 0.057 ms
+  Execution Time: 1.430 ms
+  3)
+  Index Scan using idx_btree_value on orders  (cost=0.56..8.58 rows=1 width=37) (actual time=1.731..1.733 rows=1 loops=1)
+  Index Cond: (value = '9908f08bac57ffe46eb6c6d150e09f4a'::text)
+  Buffers: shared hit=2 read=3
+  Planning Time: 0.055 ms
+  Execution Time: 1.747 ms
   ```
-  - 1-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='999' ```
-  ```
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.025 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.067 ms
-  Execution Time: 0.039 ms
-  ```
-  - Объяснение - поиск по B-tree индексу. БД идёт по дереву, сравнивая значения, находит указатель на строку в индексе и читает её из таблиц. 
 
-  - 2-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='999999'```
-  ```
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.026..0.027 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999999'::text)
-  Planning Time: 0.067 ms
-  Execution Time: 0.042 ms
-  ```
-  - Объяснение - поиск по B-tree индексу. БД идёт по дереву, сравнивая значения, находит указатель на строку в индексе и читает её из таблиц. 
-
-  - 3-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='9999999' ```
-  ```
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.026 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.071 ms
-  Execution Time: 0.041 ms
-  ```
-  - Объяснение - поиск по B-tree индексу. БД идёт по дереву, сравнивая значения, находит указатель на строку в индексе и читает её из таблиц. 
-
-|    Запрос   | С индекса |Без индексом|
-|-------------|-----------|------------|
-|     '999'   |  0.039 ms |   316 ms   |
-|   '999999'  |  0.042 ms |  346.3 ms  |
-|  '9999999'  |  0.041 ms |   382 ms   |
+|    Запрос   | С индексом (AVG) | Без индекса (AVG) |
+|-------------|------------------|-------------------|
+|     1       |     1.769 ms     |     388.344 ms    |
+|     2       |     1.430 ms     |     344.141 ms    |
+|     3       |     1.747 ms     |     347.186 ms    |
 
 **Вывод**
-- Эксперимент показал, что поиск через B-tree индексы намного быстрые чем без них, мне кажется что можно запросы делать еще быстрее использовать HASH-функции где поиск за O(1) 
+- Эксперимент показал, что использование B-tree индекса ускоряет поиск в ~200 раз по сравнению с полным сканированием таблицы. Мое ожжидание не подвердилось я ожидал поиск по индексу будет 0.3-1 мс, а на деле получил 1.769 мс, расхождение объясняется накладными расходами на планирование запроса и чтение страниц индекса с диска. Во втором эксперименте будет проведено сравнение с HASH индексом, который теоретически должен быть быстрее для точных сравнений за счёт сложности O(1). 
 
 ## Эксперимент №2 B-tree vs HASH-функции:
 **Ожидания**
-- Поиск с индексами через HASH-функции должен быть быстрее на 0.01 так как поиск за O(1), чем у B-tree с поиском O(logn)
+- Поиск с индексами через HASH должен быть быстрее так как поиск идет по ключу за время O(1), а в B-tree идет поиск по дереву и происходит сравнение элементов с O(logn). 
 
- - Создаем первую таблицу и создаем в ней B-tree индксы:
-  ```
-  CREATE INDEX idx_user_id ON orders(user_id);
-  ```
+ - Создадим таблицу orders с полями id, order_id и заполним ее 10 млн записями и по очередно сделаем замеры с двумя типами индексов **B-tree** и **HASH**.
+
+  **Посчитаем уровни**
+  - B-tree
+  1. log2(999) = x, x = 10 
+  2. log2(999999) = x, x = 20
+  3. log2(9999999) = x, x = 23
+  - HASH
+  Хеш-индекс вычисляет хеш от ключа и сразу переходит к нужной странице. Глубина всегда 1.
+
+ ```
+ 1. Создаем таблицу
+  CREATE TABLE orders (
+    id SERIAL PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+ 2. Вставляем 10 млн записей
+ INSERT INTO orders (value)
+ SELECT generate_series(1, 10000000)::VARCHAR;
+ 3. Создадим B-tree-индексы
+ CREATE INDEX idx_btree_value ON orders USING BTREE (value);
+ 4. Удаляем B-tree индексы
+ DROP INDEX idx_btree_value;
+ 5. Создаем HASH-индексы
+ CREATE INDEX idx_hash_value ON orders USING HASH (value);
+ Перед каждым запрпосом будем чистить кеш, перезаходить в контейнер, для того чтобы смотреть реальное время запроса.
+ ```
+
  **С B-tree индексами**
-   - 1-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='999' ```
+   
   ```
+  - 10 запусков запрос
   1)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.025 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.067 ms
-  Execution Time: 0.039 ms
+  Index Scan using idx_btree_value on orders  (cost=0.56..8.58 rows=1 width=37) (actual time=1.732..1.733 rows=1 loops=1)
+  Index Cond: (value = '70dae82961365ae645094c6d198f4ff7'::text)
+  Buffers: shared read=5
+  Planning:
+  Buffers: shared hit=73 read=27
+  Planning Time: 0.691 ms
+  Execution Time: 1.769 ms
   2)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.025..0.026 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.069 ms
-  Execution Time: 0.041 ms
+  Index Scan using idx_btree_value on orders  (cost=0.56..8.58 rows=1 width=37) (actual time=1.414..1.416 rows=1 loops=1)
+  Index Cond: (value = '5cea12ace5976cfff6d189dff926dd4d'::text)
+  Buffers: shared hit=3 read=2
+  Planning Time: 0.057 ms
+  Execution Time: 1.430 ms
   3)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.026..0.027 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.071 ms
-  Execution Time: 0.042 ms
+  Index Scan using idx_btree_value on orders  (cost=0.56..8.58 rows=1 width=37) (actual time=1.731..1.733 rows=1 loops=1)
+  Index Cond: (value = '9908f08bac57ffe46eb6c6d150e09f4a'::text)
+  Buffers: shared hit=2 read=3
+  Planning Time: 0.055 ms
+  Execution Time: 1.747 ms
   4)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.025..0.026 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.069 ms
-  Execution Time: 0.042 ms
+  Index Scan using idx_btree_value on orders  (cost=0.56..8.58 rows=1 width=37) (actual time=1.707..1.709 rows=1 loops=1)
+  Index Cond: (value = '5d2cdaa09bc693dc42f15a46e7c4b632'::text)
+  Buffers: shared hit=2 read=3
+  Planning Time: 0.056 ms
+  Execution Time: 1.723 ms
   5)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.025..0.026 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.069 ms
-  Execution Time: 0.040 ms
-  6)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.025 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.068 ms
-  Execution Time: 0.040 ms
-  7)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.025..0.027 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.069 ms
-  Execution Time: 0.042 ms
-  8)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.026..0.027 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.069 ms
-  Execution Time: 0.041 ms
-  9)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.025..0.026 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.069 ms
-  Execution Time: 0.041 ms
-  10)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.025 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.068 ms
-  Execution Time: 0.040 ms
-  ```
-  - 2-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='999999'```
-  ```
-  1)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.026..0.027 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999999'::text)
+  Index Scan using idx_btree_value on orders  (cost=0.56..8.58 rows=1 width=37) (actual time=1.410..1.412 rows=1 loops=1)
+  Index Cond: (value = 'bcc69e47a288fc856daaaaf0806d8e8f'::text)
+  Buffers: shared hit=3 read=2
   Planning Time: 0.067 ms
-  Execution Time: 0.042 ms
-  2)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.026 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999999'::text)
-  Planning Time: 0.068 ms
-  Execution Time: 0.041 ms
-  3)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.023..0.024 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999999'::text)
-  Planning Time: 0.070 ms
-  Execution Time: 0.040 ms
-  4)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.025..0.026 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999999'::text)
-  Planning Time: 0.067 ms
-  Execution Time: 0.040 ms
-  5)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.025..0.026 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999999'::text)
-  Planning Time: 0.069 ms
-  Execution Time: 0.041 ms
+  Execution Time: 1.428 ms
   6)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.026..0.028 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999999'::text)
-  Planning Time: 0.078 ms
-  Execution Time: 0.044 ms
+  Index Scan using idx_btree_value on orders  (cost=0.56..8.58 rows=1 width=37) (actual time=1.777..1.779 rows=1 loops=1)
+  Index Cond: (value = 'cd9704256802b529b08d6e67f5fbe724'::text)
+  Buffers: shared hit=3 read=2
+  Planning Time: 0.056 ms
+  Execution Time: 1.793 ms
   7)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.026 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999999'::text)
-  Planning Time: 0.073 ms
-  Execution Time: 0.042 ms
+  Index Scan using idx_btree_value on orders  (cost=0.56..8.58 rows=1 width=37) (actual time=4.858..4.860 rows=1 loops=1)
+  Index Cond: (value = '23b0026d03ed53ba92de182abf9b9167'::text)
+  Buffers: shared read=5
+  Planning:
+  Buffers: shared hit=73 read=27
+  Planning Time: 14.615 ms
+  Execution Time: 4.961 ms
   8)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.026..0.027 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999999'::text)
-  Planning Time: 0.073 ms
-  Execution Time: 0.043 ms
+  Index Scan using idx_btree_value on orders  (cost=0.56..8.58 rows=1 width=37) (actual time=2.193..2.195 rows=1 loops=1)
+  Index Cond: (value = 'cacc70d9c56d038a5540222bddd5cef7'::text)
+  Buffers: shared hit=2 read=3
+  Planning:
+  Buffers: shared hit=110
+  Planning Time: 0.465 ms
+  Execution Time: 2.235 ms
   9)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.026..0.027 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999999'::text)
-  Planning Time: 0.069 ms
-  Execution Time: 0.042 ms
+  Index Scan using idx_btree_value on orders  (cost=0.56..8.58 rows=1 width=37) (actual time=1.660..1.662 rows=1 loops=1)
+  Index Cond: (value = '105611cd11978287f9952d04dfa3d1f9'::text)
+  Buffers: shared hit=3 read=2
+  Planning Time: 0.057 ms
+  Execution Time: 1.676 ms
   10)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.026..0.027 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999999'::text)
-  Planning Time: 0.070 ms
-  Execution Time: 0.043 ms
+  Index Scan using idx_btree_value on orders  (cost=0.56..8.58 rows=1 width=37) (actual time=1.619..1.621 rows=1 loops=1)
+  Index Cond: (value = 'a09e454a0506eb05805ac20edf198994'::text)
+  Buffers: shared hit=3 read=2
+  Planning Time: 0.056 ms
+  Execution Time: 1.635 ms
   ```
-  - 3-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id='9999999' ```
-  ```
-  1)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.026 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.071 ms
-  Execution Time: 0.041 ms
-  2)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.027..0.029 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.079 ms
-  Execution Time: 0.045 ms
-  3)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.025 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.069 ms
-  Execution Time: 0.040 ms
-  4)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.026 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.068 ms
-  Execution Time: 0.040 ms
-  5)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.037..0.038 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.111 ms
-  Execution Time: 0.055 ms
-  6)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.023..0.024 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.069 ms
-  Execution Time: 0.039 ms
-  7)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.025..0.026 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.068 ms
-  Execution Time: 0.042 ms
-  8)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.023..0.025 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.069 ms
-  Execution Time: 0.040 ms
-  9)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.026 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.068 ms
-  Execution Time: 0.040 ms
-  10)
-  Index Scan using idx_user_id on orders  (cost=0.43..8.45 rows=1 width=11) (actual time=0.024..0.026 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.070 ms
-  Execution Time: 0.041 ms
-  ```
-
- - Создаем вторую таблицу и создаем в ней hash-индексы:
- ```
-  CREATE INDEX idx_hash_user ON users USING HASH (user_id);
- ```
 
   **С HASH индексами**
 
-  - 1-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM users WHERE user_id='999' ```
+  - 10 запрос
   ```
   1)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.021..0.022 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.163 ms
-  Execution Time: 0.036 ms
+  Index Scan using idx_hash_value on orders  (cost=0.00..8.02 rows=1 width=37) (actual time=5.171..5.175 rows=1 loops=1)
+  Index Cond: (value = 'cad9e2a12a481d85624604dc795284a6'::text)
+  Buffers: shared read=3
+  Planning:
+  Buffers: shared hit=78 read=23
+  Planning Time: 10.982 ms
+  Execution Time: 5.261 ms
   2)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.017..0.018 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.067 ms
-  Execution Time: 0.034 ms
+  Index Scan using idx_hash_value on orders  (cost=0.00..8.02 rows=1 width=37) (actual time=0.831..0.832 rows=1 loops=1)
+  Index Cond: (value = '5cea12ace5976cfff6d189dff926dd4d'::text)
+  Buffers: shared hit=1 read=1
+  Planning Time: 0.055 ms
+  Execution Time: 0.846 ms
   3)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.017..0.017 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.066 ms
-  Execution Time: 0.032 ms
+  Index Scan using idx_hash_value on orders  (cost=0.00..8.02 rows=1 width=37) (actual time=0.768..0.769 rows=1 loops=1)
+  Index Cond: (value = '9908f08bac57ffe46eb6c6d150e09f4a'::text)
+  Buffers: shared hit=1 read=1
+  Planning Time: 0.055 ms
+  Execution Time: 0.783 ms
   4)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.018..0.019 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.109 ms
-  Execution Time: 0.035 ms
+  Index Scan using idx_hash_value on orders  (cost=0.00..8.02 rows=1 width=37) (actual time=0.819..0.821 rows=1 loops=1)
+  Index Cond: (value = '5d2cdaa09bc693dc42f15a46e7c4b632'::text)
+  Buffers: shared hit=1 read=1
+  Planning Time: 0.054 ms
+  Execution Time: 0.835 ms
   5)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.016..0.017 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.066 ms
-  Execution Time: 0.032 ms
+  Index Scan using idx_hash_value on orders  (cost=0.00..8.02 rows=1 width=37) (actual time=0.901..0.902 rows=1 loops=1)
+  Index Cond: (value = 'bcc69e47a288fc856daaaaf0806d8e8f'::text)
+  Buffers: shared hit=1 read=1
+  Planning Time: 0.074 ms
+  Execution Time: 0.920 ms
   6)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.016..0.017 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.063 ms
-  Execution Time: 0.032 ms
+  Index Scan using idx_hash_value on orders  (cost=0.00..8.02 rows=1 width=37) (actual time=0.847..0.849 rows=1 loops=1)
+  Index Cond: (value = 'cd9704256802b529b08d6e67f5fbe724'::text)
+  Buffers: shared hit=1 read=1
+  Planning Time: 0.052 ms
+  Execution Time: 0.862 ms
   7)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.017..0.017 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.066 ms
-  Execution Time: 0.032 ms
+  Index Scan using idx_hash_value on orders  (cost=0.00..8.02 rows=1 width=37) (actual time=0.832..0.834 rows=1 loops=1)
+  Index Cond: (value = '23b0026d03ed53ba92de182abf9b9167'::text)
+  Buffers: shared hit=1 read=1
+  Planning Time: 0.051 ms
+  Execution Time: 0.848 ms
   8)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.016..0.018 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.068 ms
-  Execution Time: 0.033 ms
+  Index Scan using idx_hash_value on orders  (cost=0.00..8.02 rows=1 width=37) (actual time=0.812..0.814 rows=1 loops=1)
+  Index Cond: (value = 'cacc70d9c56d038a5540222bddd5cef7'::text)
+  Buffers: shared hit=1 read=1
+  Planning Time: 0.055 ms
+  Execution Time: 0.829 ms
   9)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.022..0.024 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.083 ms
-  Execution Time: 0.043 ms
+  Index Scan using idx_hash_value on orders  (cost=0.00..8.02 rows=1 width=37) (actual time=1.043..1.061 rows=1 loops=1)
+  Index Cond: (value = '105611cd11978287f9952d04dfa3d1f9'::text)
+  Buffers: shared hit=1 read=1
+  Planning Time: 0.473 ms
+  Execution Time: 1.203 ms
   10)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.017..0.018 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999'::text)
-  Planning Time: 0.067 ms
-  Execution Time: 0.033 ms
-  ```
-  - 2-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM users WHERE user_id='999999'```
-  ```
-  1)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.017..0.017 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999999'::text)
-  Planning Time: 0.065 ms
-  Execution Time: 0.032 ms
-  2)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.017..0.018 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999999'::text)
-  Planning Time: 0.065 ms
-  Execution Time: 0.034 ms
-  3)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.021..0.023 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999999'::text)
-  Planning Time: 0.070 ms
-  Execution Time: 0.041 ms
-  4)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.019..0.020 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999999'::text)
-  Planning Time: 0.065 ms
-  Execution Time: 0.037 ms
-  5)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.016..0.017 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999999'::text)
-  Planning Time: 0.065 ms
-  Execution Time: 0.032 ms
-  6)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.017..0.018 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999999'::text)
-  Planning Time: 0.092 ms
-  Execution Time: 0.035 ms
-  7)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.020..0.021 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999999'::text)
-  Planning Time: 0.085 ms
-  Execution Time: 0.042 ms
-  8)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.017..0.018 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999999'::text)
-  Planning Time: 0.068 ms
-  Execution Time: 0.033 ms
-  9)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.017..0.017 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999999'::text)
-  Planning Time: 0.067 ms
-  Execution Time: 0.032 ms
-  10)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.018..0.019 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '999999'::text)
-  Planning Time: 0.068 ms
-  Execution Time: 0.034 ms
-  ```
-  - 3-запуск запрос ```EXPLAIN ANALYZE SELECT * FROM users WHERE user_id='9999999' ```
-  ```
-  1)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.016..0.016 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.065 ms
-  Execution Time: 0.031 ms
-  2)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.017..0.018 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.068 ms
-  Execution Time: 0.033 ms
-  3)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.018..0.019 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.070 ms
-  Execution Time: 0.036 ms
-  4)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.015..0.016 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.064 ms
-  Execution Time: 0.031 ms
-  5)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.016..0.017 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.064 ms
-  Execution Time: 0.032 ms
-  6)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.017..0.018 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.084 ms
-  Execution Time: 0.035 ms
-  7)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.015..0.016 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.064 ms
-  Execution Time: 0.031 ms
-  8)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.016..0.017 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.067 ms
-  Execution Time: 0.032 ms
-  9)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.016..0.016 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.064 ms
-  Execution Time: 0.031 ms
-  10)
-  Index Scan using idx_hash_user on users  (cost=0.00..8.02 rows=1 width=11) (actual time=0.015..0.016 rows=1 loops=1)
-  Index Cond: ((user_id)::text = '9999999'::text)
-  Planning Time: 0.065 ms
-  Execution Time: 0.032 ms
+  Index Scan using idx_hash_value on orders  (cost=0.00..8.02 rows=1 width=37) (actual time=0.841..0.842 rows=1 loops=1)
+  Index Cond: (value = 'a09e454a0506eb05805ac20edf198994'::text)
+  Buffers: shared hit=1 read=1
+  Planning Time: 0.072 ms
+  Execution Time: 0.859 ms
   ```
 
-|    Запрос   |   B-tree  |    HASH    |
-|-------------|-----------|------------|
-|     '999'   |  0.0408 ms|  0.0342 ms |
-|   '999999'  |  0.0418 ms|  0.0352 ms |
-|  '9999999'  |  0.0423 ms|  0.0324 ms  |
+  | Метрика        | B-tree      | HASH        |
+  |----------------|-------------|-------------|
+  | Среднее время  | 2.04 ms     | 1.27 ms     |
+  | Минимум        | 1.414 ms    | 0.768 ms    |
+  | Максимум       | 4.961 ms    | 5.261 ms    |
+  | Медиана        | 1.735 ms    | 0.848 ms    |
+  | Кол-во запросов| 10          | 10          |
 
 **Вывод**
-- эксперимент подтвердил ожидания, что использования идексов через HASH-функции будет быстрее, но и B-tree показал достаточно хороший результат, по умолчанию если добавлять индексы будут устанавливаться B-tree индексы, они универсальныу, поддерживают сортировку и могут работать с **LIKE**, когда hash-индексы прменяются только для точного сравнение **=** и нету сортировки и **LIKE**.
+- эксперимент подтвердил, что использования идексов через HASH будет быстрее, но и B-tree показал достаточно хороший результат, по умолчанию если добавлять индексы будут устанавливаться B-tree индексы, они универсальныe, поддерживают сортировку и могут работать с **LIKE%**, когда hash-индексы применяются только для точного сравнения **=** и нету сортировки и **LIKE**.
+
+**Проверим сколько памяти занимают индексы**
+
+- Выполним команду:
+
+```
+SELECT                                                   
+    indexname,
+    pg_size_pretty(pg_relation_size(indexname::regclass)) AS size
+FROM pg_indexes
+WHERE tablename = 'orders';
+```
+| Индекс | Размер |
+|--------|--------|
+| `idx_btree_value` | 563 MB |
+| `idx_hash_value` | 256 MB |
+| `orders_pkey` | 247 MB |
 
 **Виды чтения таблиц:**
 
@@ -748,37 +594,64 @@ FROM group_class;
 - Приведение типов - не может использовать индекс, если типы данных не совпадают.
 - `LIKE '%text'` - B-tree индекс работает слева направо % в начале ломает этот порядок
 - Низкая селективность - индексы не используются если большое количество строк имеют одно и тоже значение.
-- Слишком маленькая таблица - проще читать всю таблицу полностью если количество записей меньше 1000.
+- Слишком маленькая таблица - планировщик может выбрать `Seq Scan`, если оценка стоимости полного сканирования оказывается ниже, чем использование индекса.
 
 **Правило левого префикса**
-1. Первый запрос с соблюдением левого префикса:
-EXPLAIN ANALYZE
-SELECT * FROM orders                                 
-WHERE user_id = 5000 AND created_at > '2024-01-01';
+- Создадим базу данных и наполним ее 1 млн строк:
+
 ```
-Bitmap Heap Scan on orders  (cost=5.45..369.36 rows=100 width=22) (actual time=0.037..0.153 rows=101 loops=1)
-   Recheck Cond: ((user_id = 5000) AND (created_at > '2024-01-01 00:00:00'::timestamp without time zone))
-   Heap Blocks: exact=101
-   Buffers: shared hit=105
-   ->  Bitmap Index Scan on idx_orders_user_created  (cost=0.00..5.42 rows=100 width=0) (actual time=0.021..0.021 rows=101 loops=1)
-         Index Cond: ((user_id = 5000) AND (created_at > '2024-01-01 00:00:00'::timestamp without time zone))
-         Buffers: shared hit=4
- Planning Time: 0.070 ms
- Execution Time: 0.174 ms
+CREATE TABLE orders (
+    id SERIAL PRIMARY KEY,
+    user_id INT,
+    created_at TIMESTAMP
+);
+
+INSERT INTO orders (user_id, created_at)
+SELECT 
+    (random() * 10000)::INT,
+    '2024-01-01'::timestamp + (random() * 365 * interval '1 day')
+FROM generate_series(1, 1000000);
+
+CREATE INDEX idx_orders_user_created ON orders (user_id, created_at);
+```
+
+1. Первый запрос с соблюдением левого префикса:
+
+```
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM orders 
+WHERE user_id = 5000 AND created_at BETWEEN '2024-06-01' AND '2024-06-02';
+```
+
+```
+Index Scan using idx_orders_user_created on orders  (cost=0.42..8.45 rows=1 width=16) (actual time=0.032..0.033 rows=0 loops=1)
+   Index Cond: ((user_id = 5000) AND (created_at >= '2024-06-01 00:00:00'::timestamp without time zone) AND (created_at <= '2024-06-02 00:00:00'::timestamp without time zone))
+   Buffers: shared read=3
+ Planning:
+   Buffers: shared hit=30
+ Planning Time: 0.171 ms
+ Execution Time: 0.046 ms
 ```
 2. Второй запрос без соблюдения левого префикса:
-EXPLAIN ANALYZE 
-SELECT * FROM orders                                 
-WHERE created_at > '2024-01-01';
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM orders 
+WHERE created_at BETWEEN '2024-06-01' AND '2024-06-02';
 ```
-Seq Scan on orders  (cost=0.00..18870.00 rows=999902 width=22) (actual time=0.011..100.646 rows=1000000 loops=1)
-   Filter: (created_at > '2024-01-01 00:00:00'::timestamp without time zone)
-   Buffers: shared hit=6370
- Planning Time: 0.055 ms
- Execution Time: 143.426 ms
+Gather  (cost=1000.00..12926.80 rows=2708 width=16) (actual time=0.452..43.271 rows=2671 loops=1)
+   Workers Planned: 2
+   Workers Launched: 2
+   Buffers: shared hit=5406
+   ->  Parallel Seq Scan on orders  (cost=0.00..11656.00 rows=1128 width=16) (actual time=0.095..33.132 rows=890 loops=3)
+         Filter: ((created_at >= '2024-06-01 00:00:00'::timestamp without time zone) AND (created_at <= '2024-06-02 00:00:00'::timestamp without time zone))
+         Rows Removed by Filter: 332443
+         Buffers: shared hit=5406
+ Planning:
+   Buffers: shared hit=92
+ Planning Time: 0.501 ms
+ Execution Time: 43.555 ms
 ```
 **Вывод**
-- используя в запросе левый префикс ответ придет за доли секунды, а если пропущен левый префикс индекс бесполезен, потому что нельзя прыгать по таблице и поиск будет выполнен через `Seq Scan`.
+- используя в запросе левый префикс ответ придет за доли секунды, а если пропущен левый префикс индекс бесполезен. PostgreSQL выполняет параллельное последовательное сканирование (Parallel Seq Scan) всей таблицы.
 
 **Цена индекса:**
 
@@ -786,8 +659,8 @@ Seq Scan on orders  (cost=0.00..18870.00 rows=999902 width=22) (actual time=0.01
 |----------|-----------|
 |  Память  |Может занимать место сколько и вся таблица|
 |  INSERT  |Каждая вставка требует обновления индекса медленнее|
-|  UPDATE  |Если обновляешь индексируемую колонку индекс перестраивается |
-|  DELETE  |Удаление из индекса тоже занимает время |
+|  UPDATE  |Добавляется новая запись в индекс. Старая помечается как мёртвая для VACUUM. Индекс не перестраивается целиком|
+|  DELETE  |Запись в индексе помечается как мёртвая для VACUUM|
 
 ### Что такое EXPLAIN ANALYZE:
 - EXPLAIN ANALYZE - это инструмент PostgreSQL, который реально выполняет запрос и показывает, как он работал:
@@ -815,11 +688,24 @@ Seq Scan on orders  (cost=0.00..18870.00 rows=999902 width=22) (actual time=0.01
   |---------------|-------------------|
   |cost=0.15..8.17|Примерная стоимость|
   |    rows=1     |Планировщик ожидает 1 строку|
-  |actual time=0.125..0.289|Реальное время выполнение|
+  |actual time=0.043..0.045|Реальное время выполнение|
   |actual rows=1|Реальное количество строк|
   |loops=1|Реальное выполнение строк|
   |Planning Time|Время составления плана|
   |Execution Time|Время выполнения запроса|
+
+  **Примечание**
+  - Не во всех случаях можно использовать **EXPLAIN ANALYZE** так как он выполняет запрос и данные будут закомиченны даже если это сделано просто для теста, лучше в таких моментах использовать **EXPLAIN** мы увидим не все конечно данные о запросе, но запрос не выполнится в базе данных и это самый важный момент. Но если мы используем **SELECT** запрос то ничего страшного, но если **UPDATE/DELETE/INSERT** то база данных действительно изменится.
+
+  **Рекомендация:**
+  - Для SELECT — используйте `EXPLAIN ANALYZE` (безопасно).
+  - Для UPDATE/DELETE/INSERT — используйте `EXPLAIN` или выполняйте внутри транзакции с `ROLLBACK`:
+
+  ```
+  BEGIN;
+  EXPLAIN ANALYZE UPDATE users SET name = 'test' WHERE id = 1;
+  ROLLBACK;
+  ```
 
 **Вывод**
 - Из всего сказаного, можно сделать вывод что индексировать надо только то что мы используем для поиска и сортировки, а не все информацию, в противном случае сталкнемся с тем с медленным вставкам и раздутием БД.
@@ -911,7 +797,7 @@ ROLLBACK;
     BEGIN;
     SELECT balance FROM users WHERE id = 1; -> 100
     ----
-    UPDATE users SET balance = balance + 50 WHERE id = 1; -> 150
+    UPDATE users SET balance = 150 WHERE id = 1; -> 150
     ---
     COMMIT;
     ```
@@ -921,7 +807,7 @@ ROLLBACK;
     BEGIN;
     SELECT balance FROM users WHERE id = 1; -> 100
     ----
-    UPDATE users SET balance = balance + 20 WHERE id = 1; -> 120
+    UPDATE users SET balance = 120 WHERE id = 1; -> 120
     ----
     COMMIT;
     Ответ 120, первый коммит не применился
