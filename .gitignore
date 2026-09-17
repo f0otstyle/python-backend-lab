@@ -15,6 +15,3 @@ async_client.log
 compare.log
 sync_client.log
 *.log
-
-test.txt
-db.sqlite3

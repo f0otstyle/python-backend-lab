@@ -1107,8 +1107,8 @@ COMMIT;
  **Пример**
  ```
  BEGIN;
- SELECT * FROM users WHERE id = 1 FOR UPDATE;
- UPDATE accounts SET balance = balance + 100 WHERE id = 1;
+ SELECT * FROM accounts WHERE id = 1 FOR UPDATE;
+ UPDATE accounts SET balance = 1100 WHERE id = 1;
  COMMIT;
  ```
  - `FOR SHARE` - блокирует строку для изменений, но позволяет другим читать.
@@ -1129,13 +1129,15 @@ COMMIT;
 
  BEGIN;
  SELECT * FROM tasks 
- WHERE status = 'pending' 
- FOR UPDATE SKIP LOCKED 
- LIMIT 1;
+ WHERE status = 'pending'  
+ LIMIT 1
+ FOR UPDATE SKIP LOCKED;
+
+ вернулась строка с id = 7
 
  UPDATE tasks 
  SET status = 'processing', assigned_to = 'Worker_1' 
- WHERE id = 1;
+ WHERE id = 7;
 
  COMMIT;
 
@@ -1144,12 +1146,14 @@ COMMIT;
  BEGIN;
  SELECT * FROM tasks 
  WHERE status = 'pending' 
- FOR UPDATE SKIP LOCKED 
- LIMIT 1;
+ LIMIT 1
+ FOR UPDATE SKIP LOCKED ;
+
+ вернулась строка с id = 4
 
  UPDATE tasks 
  SET status = 'processing', assigned_to = 'Worker_2' 
- WHERE id = 2;
+ WHERE id = 4;
 
  COMMIT;
  ```  
@@ -1161,26 +1165,56 @@ COMMIT;
 
 ```
 BEGIN;
-SELECT * FROM users WHERE id = 1 FOR UPDATE;
-UPDATE accounts SET amount = amount + 100 WHERE user_id = 2;
+SELECT * FROM accounts WHERE id = 1 FOR UPDATE;
+UPDATE accounts SET balance = 1100 WHERE id = 2;
 ```
 
 - Транзакция Б
 
 ```
 BEGIN;
-SELECT * FROM users WHERE id = 2 FOR UPDATE;
-UPDATE accounts SET amount = amount + 100 WHERE user_id = 1;
+SELECT * FROM accounts WHERE id = 2 FOR UPDATE;
+UPDATE accounts SET balance = 1100 WHERE id = 1;
 ```
-- PostgreSQL сам умеет их обнаруживать и отменять одну из транзакций, он выберит ту которую дешевли откатить.
+**Результат**
+
+- Транзакция А
+
+```
+UPDATE 1
+```
+
+- Транзакция Б
+
+```
+ERROR:  deadlock detected
+DETAIL:  Process 47 waits for ShareLock on transaction 812; blocked by process 3
+9.
+Process 39 waits for ShareLock on transaction 813; blocked by process 47.
+HINT:  See server log for query details.
+CONTEXT:  while updating tuple (0,4) in relation "accounts"
+
+```
+
+- PostgreSQL откатывает ту транзакцию, которая обнаружила цикл — то есть чей запрос блокировки замкнул граф ожидания. Иными словами, откатывается та транзакция, которая последней запросила ресурс, уже удерживаемый другой транзакцией, тем самым замкнув цикл.
 
 ##  Как исправить Lost Update:
 
 1. Оптимистичная блокировка
 ```
+SELECT balance, version FROM accounts WHERE id = 1;
+
+результат **SELECT** запроса balance = 300, version = 5;
+
+----
 UPDATE accounts 
 SET balance = balance + 100, version = version + 1
-WHERE id = 1 AND version = 1;
+WHERE id = 1 AND version = 5;
+
+проверяем результат
+UPDATE 1 -> успех
+UPDATE 0 -> версия изменилась -> повторить с шага 1
+
 ```
 **Плюс**
 - Высокая производительность.
