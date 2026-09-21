@@ -126,7 +126,161 @@
  - CROSS JOIN slogans
  
 **Условие в `WHERE` против условия в `ON`**
-- Условие в ON — фильтрует данные ДО соединения, условие в WHERE — фильтрует результат после соединения это приводит к потери данных на выходе.
+
+- Эксперимент:
+1. Подготовим таблице пользователей и заказов:
+
+```
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    name TEXT
+);
+
+CREATE TABLE orders (
+    id SERIAL PRIMARY KEY,
+    user_id INT REFERENCES users(id),
+    age INT,
+    amount NUMERIC
+);
+```
+- условие в ON
+```
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT u.name, o.amount
+FROM users u
+INNER JOIN orders o ON u.id = o.user_id AND o.age = 18;
+```
+- Результат
+
+|name|amount|
+|---|---|
+|Алиса|100|
+|Боб|50|
+
+```
+Hash Join  (cost=24.20..51.72 rows=6 width=64) (actual time=0.052..0.055 rows=2 loops=1)
+   Hash Cond: (u.id = o.user_id)
+   Buffers: shared hit=2 dirtied=1
+   ->  Seq Scan on users u  (cost=0.00..22.70 rows=1270 width=36) (actual time=0.005..0.006 rows=3 loops=1)
+         Buffers: shared hit=1
+   ->  Hash  (cost=24.12..24.12 rows=6 width=36) (actual time=0.027..0.028 rows=2 loops=1)
+         Buckets: 1024  Batches: 1  Memory Usage: 9kB
+         Buffers: shared hit=1 dirtied=1
+         ->  Seq Scan on orders o  (cost=0.00..24.12 rows=6 width=36) (actual time=0.006..0.007 rows=2 loops=1)
+               Filter: (age = 18)
+               Rows Removed by Filter: 1
+               Buffers: shared hit=1 dirtied=1
+ Planning:
+   Buffers: shared hit=6 dirtied=1
+ Planning Time: 0.160 ms
+ Execution Time: 0.074 ms
+```
+
+- условие в WHERE
+```
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT u.name, o.amount
+FROM users u
+INNER JOIN orders o ON u.id = o.user_id
+WHERE o.age = 18;
+```
+- Результат 
+
+|name|amount|
+|---|---|
+|Алиса|100|
+|Боб|50|
+
+```
+ Hash Join  (cost=24.20..51.72 rows=6 width=64) (actual time=0.046..0.049 rows=2 loops=1)
+   Hash Cond: (u.id = o.user_id)
+   Buffers: shared hit=2
+   ->  Seq Scan on users u  (cost=0.00..22.70 rows=1270 width=36) (actual time=0.008..0.008 rows=3 loops=1)
+         Buffers: shared hit=1
+   ->  Hash  (cost=24.12..24.12 rows=6 width=36) (actual time=0.016..0.017 rows=2 loops=1)
+         Buckets: 1024  Batches: 1  Memory Usage: 9kB
+         Buffers: shared hit=1
+         ->  Seq Scan on orders o  (cost=0.00..24.12 rows=6 width=36) (actual time=0.006..0.007 rows=2 loops=1)
+               Filter: (age = 18)
+               Rows Removed by Filter: 1
+               Buffers: shared hit=1
+ Planning:
+   Buffers: shared hit=191
+ Planning Time: 0.772 ms
+ Execution Time: 0.090 ms
+```
+
+- При INNER JOIN **WHERE** и **ON** показали себя одинаково и вывели одинаковые ответы.
+
+- условие в ON 
+```
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT u.name, o.amount
+FROM users u
+LEFT JOIN orders o ON u.id = o.user_id AND o.age = 18;
+```
+- Результат 
+
+|name|amount|
+|---|---|
+|Алиса|100|
+|Боб|50|
+|Саша|NULL|
+
+```
+Hash Left Join  (cost=24.20..51.72 rows=1270 width=64) (actual time=0.043..0.046 rows=3 loops=1)
+   Hash Cond: (u.id = o.user_id)
+   Buffers: shared hit=2
+   ->  Seq Scan on users u  (cost=0.00..22.70 rows=1270 width=36) (actual time=0.011..0.012 rows=3 loops=1)
+         Buffers: shared hit=1
+   ->  Hash  (cost=24.12..24.12 rows=6 width=36) (actual time=0.011..0.011 rows=2 loops=1)
+         Buckets: 1024  Batches: 1  Memory Usage: 9kB
+         Buffers: shared hit=1
+         ->  Seq Scan on orders o  (cost=0.00..24.12 rows=6 width=36) (actual time=0.006..0.007 rows=2 loops=1)
+               Filter: (age = 18)
+               Rows Removed by Filter: 1
+               Buffers: shared hit=1
+ Planning Time: 0.118 ms
+ Execution Time: 0.068 ms
+```
+
+- условие в WHERE
+```
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT u.name, o.amount
+FROM users u
+LEFT JOIN orders o ON u.id = o.user_id
+WHERE o.age = 18;
+```
+- Результат 
+
+|name|amount|
+|---|---|
+|Алиса|100|
+|Боб|50|
+
+```
+Hash Join  (cost=24.20..51.72 rows=6 width=64) (actual time=0.026..0.028 rows=2 loops=1)
+   Hash Cond: (u.id = o.user_id)
+   Buffers: shared hit=2
+   ->  Seq Scan on users u  (cost=0.00..22.70 rows=1270 width=36) (actual time=0.010..0.010 rows=3 loops=1)
+         Buffers: shared hit=1
+   ->  Hash  (cost=24.12..24.12 rows=6 width=36) (actual time=0.009..0.010 rows=2 loops=1)
+         Buckets: 1024  Batches: 1  Memory Usage: 9kB
+         Buffers: shared hit=1
+         ->  Seq Scan on orders o  (cost=0.00..24.12 rows=6 width=36) (actual time=0.005..0.006 rows=2 loops=1)
+               Filter: (age = 18)
+               Rows Removed by Filter: 1
+               Buffers: shared hit=1
+ Planning Time: 0.120 ms
+ Execution Time: 0.048 ms
+```
+
+- Во втором ответе мы теряем Сашу, так как потом в **WHERE** он не прошел по условию задачи.
+
+**Вывод**
+
+- В INNER JOIN ON и WHERE работают по одному принципу, а в LEFT JOIN ON и WHERE работают по разному. ON фильтрует правую таблицу, LEFT JOIN сохраняет все данные из левой части таблице для строк без пары в правой части подставляется NULL. В WHERE NULL не попадает так как сначала сформируется таблица из левой и правой части и та часть у которой правая NULL просто не пройдет по условию и не попадают в результат. Можно сделать вывод что LEFT JOIN WHERE превращает себя в INNER JOIN только если условие в WHERE в правой колонке есть NULL.
 
 **Порядок выполнения SQL-запроса:**
 1. FROM — берем таблицу.
@@ -167,9 +321,99 @@ WHERE mark > (SELECT AVG(mark)
 ```
 
 ## `EXISTS` против `IN` против `JOIN`:
-1. `EXISTS` - проверяет существование строки в подзапросе. Работает быстрее IN на больших данных.
-2. `IN` - используется для проверки, входит ли значение в список.
-3. `JOIN` - используется, когда нужны данные из обеих таблиц.
+
+- Эксперименты:
+```
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    name TEXT
+);
+
+CREATE TABLE orders (
+    id SERIAL PRIMARY KEY,
+    user_id INT,
+    amount NUMERIC
+);
+
+INSERT INTO users (name)
+SELECT 'user_' || generate_series(1, 100000);
+
+INSERT INTO orders (user_id, amount)
+SELECT
+    floor(random() * 100000 + 1)::INT,
+    round((random() * 1000)::NUMERIC, 2)
+FROM generate_series(1, 500000);
+
+ANALYZE users;
+ANALYZE orders;
+```
+
+1. `EXISTS`:
+```
+EXPLAIN ANALYZE
+SELECT u.*
+FROM users u
+WHERE EXISTS (
+    SELECT 1 FROM orders o WHERE o.user_id = u.id
+);
+```
+- Результат:
+```
+Hash Join  (cost=10962.45..13730.42 rows=85109 width=14) (actual time=204.879..239.915 rows=99311 loops=1)
+   Hash Cond: (u.id = o.user_id)
+   ->  Seq Scan on users u  (cost=0.00..1556.00 rows=101000 width=14) (actual time=0.010..6.892 rows=101000 loops=1)
+   ->  Hash  (cost=9898.59..9898.59 rows=85109 width=4) (actual time=204.793..204.795 rows=99312 loops=1)
+         Buckets: 131072  Batches: 1  Memory Usage: 4516kB
+         ->  HashAggregate  (cost=9047.50..9898.59 rows=85109 width=4) (actual time=175.801..188.838 rows=99312 loops=1)
+               Group Key: o.user_id
+               Batches: 1  Memory Usage: 7185kB
+               ->  Seq Scan on orders o  (cost=0.00..7785.00 rows=505000 width=4) (actual time=0.004..51.500 rows=505000 loops=1)
+ Planning Time: 0.641 ms
+ Execution Time: 245.138 ms
+```
+
+2. `IN`:
+```
+EXPLAIN ANALYZE
+SELECT u.*
+FROM users u
+WHERE u.id IN (
+    SELECT user_id FROM orders
+);
+```
+- Результат:
+```
+ Hash Join  (cost=10962.45..13730.42 rows=85109 width=14) (actual time=213.605..245.544 rows=99311 loops=1)
+   Hash Cond: (u.id = orders.user_id)
+   ->  Seq Scan on users u  (cost=0.00..1556.00 rows=101000 width=14) (actual time=0.007..6.726 rows=101000 loops=1)
+   ->  Hash  (cost=9898.59..9898.59 rows=85109 width=4) (actual time=213.487..213.488 rows=99312 loops=1)
+         Buckets: 131072  Batches: 1  Memory Usage: 4516kB
+         ->  HashAggregate  (cost=9047.50..9898.59 rows=85109 width=4) (actual time=180.911..196.871 rows=99312 loops=1)
+               Group Key: orders.user_id
+               Batches: 1  Memory Usage: 7185kB
+               ->  Seq Scan on orders  (cost=0.00..7785.00 rows=505000 width=4) (actual time=0.007..53.513 rows=505000 loops=1)
+ Planning Time: 0.214 ms
+ Execution Time: 249.202 ms
+```
+
+3. `JOIN`:
+```
+HashAggregate  (cost=14454.18..15464.18 rows=101000 width=14) (actual time=422.876..435.941 rows=99311 loops=1)
+   Group Key: u.id, u.name
+   Batches: 1  Memory Usage: 7185kB
+   ->  Hash Join  (cost=2818.50..11929.18 rows=505000 width=14) (actual time=19.104..235.758 rows=504997 loops=1)
+         Hash Cond: (o.user_id = u.id)
+         ->  Seq Scan on orders o  (cost=0.00..7785.00 rows=505000 width=4) (actual time=0.009..37.800 rows=505000 loops=1)
+         ->  Hash  (cost=1556.00..1556.00 rows=101000 width=14) (actual time=19.021..19.023 rows=101000 loops=1)
+               Buckets: 131072  Batches: 1  Memory Usage: 5647kB
+               ->  Seq Scan on users u  (cost=0.00..1556.00 rows=101000 width=14) (actual time=0.003..6.986 rows=101000 loops=1)
+ Planning Time: 0.219 ms
+ Execution Time: 439.720 ms
+```
+**Вывод**
+- После эксперимента мы видим что `EXISTS` и `IN` одинаковы между собой по выполнению плана и по времени выполнения, а вот `JOIN` вообще отличается от `EXISTS` и `IN` так как `Hash Join` в  `EXISTS` и `IN` выполняется в конце и на 99311, когда в `JOIN` этот этап идет раньше и на 504997 количество строк, больше на на 405686 строк чем у `EXISTS` и `IN` отсюда и разница во времени достаточная большая.
+
+
 
 ## CTE?
 - **CTE** - это обощенная табличное выражение, которая является особой формой написания именнованного подзапроса, которая позволяет использовать результат как статическая таблица (временный результирующий набор данных). Хранится он в оперативной памяти, поэтому к нему легко добраться, следовательно **CTE** существует только в течение выполнения запроса. Кроме того, повторное использование уже полученного результатов CTE может быть эффективнее, чем несколько раз выполнить один и тот же подзапрос. База данных один раз вычисляет результат CTE и затем использует его повторно, избегая избыточных вычислений.
@@ -817,12 +1061,12 @@ ROLLBACK;
 
 **Уровни Изоляции:**
 - READ UNCOMMITTED - содержит в себе все виды аномалий и не одну из них не решает, но в PostgreSQL этот уровень изоляции эквивалентен `READ COMMITTED` и на практике `READ UNCOMMITTED` даже не применяется так как по умолчанию стоит изоляция `READ COMMITTED`.
-- READ COMMITTED - решает аномалии на грязное чтение, за счет **MVCC** механизма, делает снипшот каждого **SELECT** в транзакции.
-- REPEATABLE READ - решает проблемы на грязное чтение, неповторяющтеся чтение и фантомное чтение, но только в PostgreSQL, тоже под капотом есть **MVCC** механизм, делает снапшот транзакции перед первым **SELECT** и в этой транзакции не дает изменять данные, в том плане что на глабальном уровне запись в бд изменится, но в транзакцие в этой, в **Lost Update** он не решает проблему в прямом смысле, он решает конфликт между двумя транзакцями, транзакция которая первая сделала комит та и сохранится, вторая транзакция выйдет с ошибкой **ERROR:  could not serialize access due to concurrent update**, но нужно делать **retry** чтобы вторая транзакция тоже выполнилась, если **retry**.
-- SERIALIZABLE - обеспечивает самую строгую изоляцию транзакций. Этот уровень эмулирует последовательное выполнение транзакций для всех зафиксированных транзакций, как если бы транзакции выполнялись одна за другой, последовательно, а не параллельно. Этот уровнь изоляции рабортает как и **REPEATABLE READ**, но дополнительно отслеживает конфликты чтения-записи. При обнаружении конфликта, который нарушил бы сериализуемость, PostgreSQL выбрасывает ошибку: **ERROR: could not serialize access due to read/write dependencies among transactions**.   
+- READ COMMITTED - решает аномалии на грязное чтение, за счет **MVCC** механизма, делает снапшот каждого **SELECT** в транзакции.
+- REPEATABLE READ - решает проблемы на грязное чтение, неповторяющтеся чтение и фантомное чтение, но только в PostgreSQL, тоже под капотом есть **MVCC** механизм, делает снапшот транзакции перед первым **SELECT** и в этой транзакции не дает изменять данные, в том плане что на глабальном уровне запись в бд изменится, но в этой транзакцие мы изменения не увидем. В **Lost Update** он не решает проблему в прямом смысле, он решает конфликт между двумя транзакцями, транзакция которая первая сделала комит та и сохранится, вторая транзакция выйдет с ошибкой **ERROR:  could not serialize access due to concurrent update**, но нужно делать **retry** чтобы вторая транзакция тоже выполнилась.
+- SERIALIZABLE - обеспечивает самую строгую изоляцию транзакций. Этот уровень эмулирует последовательное выполнение транзакций для всех зафиксированных транзакций, как если бы транзакции выполнялись одна за другой, последовательно, а не параллельно. Этот уровнь изоляции рабортает как и **REPEATABLE READ**, но дополнительно отслеживает конфликты запись-запись и чтение-запись. При обнаружении конфликта, который нарушил бы сериализуемость, PostgreSQL выбрасывает ошибку: **ERROR: could not serialize access due to read/write dependencies among transactions**.   
 
 - MVCC - это механизм, управления конкурентным доступом и изоляции, устраняет конфликты между чтением и записью.
- - История - идет хранения в двух полях x_min и x_max:
+ - История - идет хранения в двух полях xmin и xmax:
 
    - **`xmin`** — идентификатор транзакции, которая создала эту версию строки.
    - **`xmax`** — идентификатор транзакции, которая удалила или изменила.
@@ -839,7 +1083,7 @@ ROLLBACK;
  - В `REPEATABLE READ` и `SERIALIZABLE` — **один раз в начале транзакции** (перед первым `SELECT`).
 
 ### Зачем нужен MVCC:
- 1. Изоляция транзакций снепшоты. Чтобы каждая транзация видела базу данных такой, какой она была на момент её начала.
+ 1. Изоляция транзакций снапшоты. Чтобы каждая транзация видела базу данных такой, какой она была на момент её начала.
  2. Чтение без блокировок. Пока одна тарнзакция обновляет строку, другая могла читать старую версию.
  3. Откат. Если сделать **UPDATE**, а потом откатить **ROLLBACK**, то PostgreSQL забудет новую версию и будет видеть старую.
 
