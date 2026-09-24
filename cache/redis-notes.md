@@ -134,11 +134,193 @@ MEMORY USAGE test:hash
 
 ## Что такое TTL и зачем он вообще нужен
 
-- TTL (Time To Live) — , это встроенная система самоудаления, срабатывающая без триггеров, без ручного вмешательства. Задал срок — и система сама решает, когда пора отправить объект на покой.
+- TTL (Time To Live) — это встроенная система самоудаления, срабатывающая без триггеров, без ручного вмешательства. Задал срок — и система сама решает, когда пора отправить объект на покой.
+
+- Срок жизни для записи в кеше нужен для делегирования инвалидации данных redis, например не инвалидировать кеш при каждом изменении, а просто поставить TTL 60 секунд, для какой-нибудь бизнес логики одноразовый код для подтвержения, сессия авторизации, ссылка сброса пароля, ограничения количества запросов пользователю (rate limit). 
+
 **Виды**
 
-|Команда||||
-|----|----|----|----|
-|EXPIRE ||
-|TTL ||
-|PERSIST  ||
+|Команда|Описание|
+|----|----|
+|EXPIRE key seconds |Устанавливает TTL для ключа в секундах.|
+|TTL key |Показывает, сколько секунд осталось до удаления ключа.|
+|PERSIST key  |Снимает TTL с ключа, делая его «вечным» |
+
+## Как Redis удаляет просроченные ключи?
+
+1. **Ленивое удаление (Lazy Expiration)** - Redis не запускает отдельный поток, который бегает и проверяет все ключи. Это было бы слишком дорого. Вместо этого он проверяет срок годности только в момент обращения.
+2. **Фоновый сэмплинг (Active Expiration)** - чтобы решить проблему «вечно висящих» ключей, Redis запускает фоновую задачу (10 раз в секунду). Он будет делать это до тех пор, пока в выборке не останется меньше 25% просроченных ключей.
+
+**Вывод**
+- Из выше перечисленного можно сделать вывод, что если ключ не попал под **Ленивое удаление** либо **Фоновый сэмплинг** то он живет все это время, пока не попадет под какой-то из видов удаления.
+
+## Политика maxmemory-policy:
+
+- Когда Redis достигает лимита maxmemory, он должен либо отклонить запись, либо удалить часть данных.
+
+|Политика|Что делает Redis|Когда использовать|
+|---|---|---|
+|noeviction|Выбрасывает ошибку OOM command not allowed на любые команды записи (SET, HSET).Чтение продолжает работать.|Когда Redis используется как хранилище|
+|allkeys-lru|Удаляет самые давно неиспользуемые ключи среди всех, независимо от того, есть у них TTL или нет.|Классический кэш|
+|allkeys-lfu|Удаляет наименее часто используемые ключи|Кэш, где важно учитывать частоту обращений, а не только время последнего.|
+|volatile-lru|Удаляет самые давно неиспользуемые ключи среди, НО только те, у которых установлен TTL.|Гибридный сценарий: часть ключей вечные|
+|volatile-*|Случайные ключи|Не всегда есть хорошо|
+
+
+### Эксперимент №3 проверка политики maxmemory-policy
+
+**Цель**
+- У `Redis` установить количество памяти 2 Мб и установить политику `noeviction` и заполнять `Redis` данными до того момента пока не поймаем ошибку `OOM command not allowed` и проверить как `Redis` ведет себя на смене политики с `noeviction` на `allkeys-lru`.
+
+**Ожидание**
+- Когда количество памяти достигнет 2 Мб, выйдет ошибка `OOM command not allowed` и при смене политики мы не получим ошибку никогда так как, происходит удаление данных.
+
+**Ход**
+- Устанавливаем ограничение памяти
+```
+CONFIG SET maxmemory 16mb
+```
+- Устанавливаем политику
+```
+CONFIG SET maxmemory-policy noeviction
+```
+- Заполняем Redis данными
+ - Заполнив Redis 5044 ключей мы поймали ошибку:
+ ```
+ DBSIZE
+ (integer) 5044
+ OOM command not allowed when used memory > 'maxmemory'.
+ ```
+ - Вызовем командой данные о памяти `INFO memory`
+ ```
+    # Memory
+    used_memory:2096248
+    used_memory_human:2.00M
+    used_memory_rss:23896064
+    used_memory_rss_human:22.79M
+    used_memory_peak:2542064
+    used_memory_peak_human:2.42M
+    used_memory_peak_time:1790216301
+    used_memory_peak_perc:82.46%
+    used_memory_overhead:1687752
+    used_memory_startup:1335376
+    used_memory_dataset:408496
+    used_memory_dataset_perc:53.69%
+    allocator_allocated:4987296
+    allocator_active:5320704
+    allocator_resident:9822208
+    allocator_muzzy:0
+    total_system_memory:8280215552
+    total_system_memory_human:7.71G
+    used_memory_lua:75776
+    used_memory_vm_eval:75776
+    used_memory_lua_human:74.00K
+    used_memory_scripts_eval:264
+    number_of_cached_scripts:1
+    number_of_functions:0
+    number_of_libraries:0
+    used_memory_vm_functions:34816
+    used_memory_vm_total:110592
+    used_memory_vm_total_human:108.00K
+    used_memory_functions:192
+    used_memory_scripts:456
+    used_memory_scripts_human:456B
+    maxmemory:2097152
+    maxmemory_human:2.00M
+    maxmemory_policy:noeviction
+    allocator_frag_ratio:1.11
+    allocator_frag_bytes:316608
+    allocator_rss_ratio:1.85
+    allocator_rss_bytes:4501504
+    rss_overhead_ratio:2.43
+    rss_overhead_bytes:14073856
+    mem_fragmentation_ratio:11.40
+    mem_fragmentation_bytes:21800000
+    mem_not_counted_for_evict:0
+    mem_replication_backlog:0
+    mem_total_replication_buffers:0
+    mem_replica_full_sync_buffer:0
+    mem_clients_slaves:0
+    mem_clients_normal:13824
+    mem_clients_normal_shared:0
+    mem_clients_normal_unshared:0
+    mem_cluster_slot_migration_output_buffer:0
+    mem_cluster_slot_migration_input_buffer:0
+    mem_cluster_slot_migration_input_buffer_peak:0
+    mem_cluster_links:0
+    mem_aof_buffer:0
+    mem_allocator:jemalloc-5.3.0
+    mem_overhead_db_hashtable_rehashing:0
+    active_defrag_running:0
+    lazyfree_pending_objects:0
+    lazyfreed_objects:46
+  ```
+- Меняем политику
+```
+CONFIG SET maxmemory-policy allkeys-lru
+```
+- Добавляем дальше ключи и проверяем выйдет ли ошибка и выведем количество ключей
+```
+DBSIZE
+(integer) 4801
+```
+
+**Вывод**
+- Эксперимент полностью подтвердил ожидания:
+
+1. **При политике `noeviction`:** Redis достиг лимита памяти (2 МБ) на 5044 ключах и начал возвращать ошибку `OOM command not allowed when used memory > 'maxmemory'` на любые команды записи. Чтение продолжало работать. Это поведение подходит для Redis как хранилища, где потеря данных недопустима.
+
+2. **После смены на `allkeys-lru`:** Redis автоматически удалил 243 старых ключа (5044 → 4801).
+
+### Эксперимент №4 проверка ключа с истекшим TTL
+
+**Цель**  
+Проверить, удаляется ли ключ из памяти сразу после истечения TTL, если к нему не обращаться.
+
+**Ожидание**  
+- Банально предположить что ключ с TTL 5 секунд должен автоматически удалиться через 5 секунд, но выше я упоминал что ключи могут жить вечно и тут я думаю применится **Ленивое удаление** и пока мы не обратимся к ключу запись будет жить. Через 10 секунд `DBSIZE` должен уменьшиться, `used_memory` должен снизиться.
+
+**Ход**
+- Очистим кеш и создадим там ключ с TTL=5 
+```
+FLUSHDB
+INFO memory | grep used_memory:
+-- used_memory:1507392
+SET ghost_key "value" EX 5
+```
+Ожидание 10 секунд
+```
+DBSIZE
+-- (integer) 0
+INFO memory | grep used_memory:
+-- used_memory:1507616
+TTL ghost_key
+-- (integer) -2
+```
+
+**Вывод**
+- Ну с ожиданием не сошлось, я думал запись будет жить, но я думаю сработала не **Ленивое удаление**, а сработал **Фоновый сэмплинг** слишком маленький кеш в Redis, used_memory произошло мелкое увеленчение наверное ключ все таки еще живет в памяти, просто обратится к нему нельзя.
+
+- Второй тест наполнив его 50 000 ключами
+```
+docker compose exec redis sh -c 'redis-cli FLUSHDB && for i in $(seq 1 50000); do redis-cli SET noise:$i "data" EX 3600 > /dev/null; done && echo "✅ 50000 ключей созданы!" && redis-cli DBSIZE'
+DBSIZE
+-- (integer) 50000
+SET ghost_key "value" EX 5
+DBSIZE
+-- (integer) 50001
+-- Ждем 10 секунд
+DBSIZE
+```
+**Вывод**
+- Вот на 50000 мое ожидание потвердилось, тут работает **Ленивое вычисление**, если мы не обращается к ключу у которого вышло TTL, то он не удаляется и живет пока к нему не обратится.
+
+## Почему `volatile-lru` — самая частая причина инцидента «кэш перестал вытесняться и сервис лёг»? 
+- Наверное по той причине, что это политика удаляет старые ключи с установленным TTL, может произойти ситуации, когда ключей с TTL нету или их совсем и удалять может быть нечего нечего. 
+
+## В каком случае `allkeys-lfu` лучше `allkeys-lru`?
+- Лучше в том случае, когда идет обращения к популярному контенту с редким, но регулярными обращениями.
+
+**Практический выбор:**
+- Для кэша API-запросов: `allkeys-lru`.
+- Для кэша популярного контента: `allkeys-lfu`.
