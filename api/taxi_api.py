@@ -1,6 +1,5 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-import random
 from fastapi import FastAPI, HTTPException, Request, Header, Depends, Response
 from http import HTTPStatus
 from fastapi.encoders import jsonable_encoder
@@ -10,6 +9,7 @@ from contextlib import asynccontextmanager
 from error_handler import OrderError, SearchError
 from logging_log import logger, log
 from authx import AuthXConfig, AuthX, TokenPayload
+from redis_cache import RedisCachedBackend
 import asyncio
 import asyncpg
 import bcrypt
@@ -90,6 +90,7 @@ async def init_db():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db = await init_db()
+    app.state.redis_cache = RedisCachedBackend(cache_ttl_seconds=None)
     app.state.db = db
     yield
     await db.close()
@@ -153,6 +154,10 @@ async def search_error(request: Request, exc: SearchError):
 
 async def get_pool(request: Request):
     return request.app.state.db
+
+
+async def get_cache(request: Request) -> RedisCachedBackend:
+    return request.app.state.redis_cache
 
 
 @app.post('/registrate', status_code=HTTPStatus.CREATED)
@@ -266,6 +271,7 @@ async def create_driver(
     except asyncpg.PostgresError:
         logger.exception('Ошибка не подключения к бд')
         raise HTTPException(status_code=500, detail="Ошибка базы данных")
+
 
 @app.get('/taxi', status_code=HTTPStatus.OK)
 @log
@@ -532,28 +538,68 @@ async def top_up_your_card(
 
 
 @app.get('/taxi/{order_id}',
-         status_code=HTTPStatus.OK,
-         dependencies=[Depends(security.access_token_required)]
+         status_code=HTTPStatus.OK
          )
 @log
 async def order_search(
     order_id: int,
-    pool: asyncpg.Pool = Depends(get_pool)
+    pool: asyncpg.Pool = Depends(get_pool),
+    cache: RedisCachedBackend = Depends(get_cache)
         ):
     '''Поиск конкретного заказа'''
-    async with pool.acquire() as conn:
-        existing = await conn.fetchrow('''
-            SELECT * FROM order_taxi WHERE id=$1
-        ''', order_id)
-        if existing:
-            logger.info(f'Заказ по {existing["id"]} найден')
-            return JSONResponse(
+    from typing import cast
+
+    test_ttl = 1
+
+    order = await cache.get_json(entity="order", identifier=order_id)
+    if order:
+        order_dict = cast(dict, order)
+        logger.info(f' CACHE HIT: Заказ по {order_id} найден в кэше')
+        return order_dict
+
+    lock_key = f"lock:taxi:order:{order_id}"
+    lock_acquired = await cache.redis.set(lock_key, "1", nx=True, ex=10)
+
+    if lock_acquired:
+        logger.warning(
+            f'DB HIT (С ЗАЩИТОЙ): Только я иду в БД для заказа {order_id}'
+            )
+        try:
+            await asyncio.sleep(0.1)
+            async with pool.acquire() as conn:
+                existing = await conn.fetchrow(
+                    'SELECT * FROM order_taxi WHERE id=$1', order_id)
+                if existing:
+                    await cache.set_json(entity="order",
+                                         identifier=order_id,
+                                         value=dict(existing),
+                                         ex_time=test_ttl
+                                         )
+                    logger.info(f'Кэш для заказа {order_id} обновлен')
+                    return JSONResponse(
                         status_code=HTTPStatus.OK,
                         content=jsonable_encoder(dict(existing)),
                         headers={"Location": f"/taxi/{existing['id']}"}
                     )
-    logger.warning(f'Попытка найти несуществующий заказ {order_id}')
-    raise SearchError()
+        finally:
+            await cache.redis.delete(lock_key)
+
+        logger.warning(f'Попытка найти несуществующий заказ {order_id}')
+        raise SearchError()
+    else:
+        logger.info(
+            f'CACHE WAIT: Жду, пока другой поток обновит кэш ({order_id})'
+            )
+        await asyncio.sleep(0.1)
+
+        order = await cache.get_json(entity="order", identifier=order_id)
+        if order:
+            logger.info(
+                f'CACHE HIT: Заказ по {order_id} найден в кэше'
+                )
+            return cast(dict, order)
+
+        raise SearchError()
 
 
 @app.delete('/taxi/{order_id}',
@@ -563,7 +609,8 @@ async def order_search(
 @log
 async def order_delete(
     order_id: int,
-    pool: asyncpg.Pool = Depends(get_pool)
+    pool: asyncpg.Pool = Depends(get_pool),
+    cache: RedisCachedBackend = Depends(get_cache)
         ):
     '''Удаление заказа'''
     async with pool.acquire() as conn:
@@ -575,6 +622,8 @@ async def order_delete(
             logger.info(f'Заказ по номеру {existing["id"]} удален')
             return
 
+    await cache.delete_json(entity='order', identifier=order_id)
+
     logger.warning(f'Попытка удалить несуществующий заказ {order_id}')
     raise SearchError()
 
@@ -583,11 +632,25 @@ async def order_delete(
          status_code=HTTPStatus.OK,
          dependencies=[Depends(security.access_token_required)])
 @log
-async def history_order_taxi(pool: asyncpg.Pool = Depends(get_pool)):
+async def history_order_taxi(
+    pool: asyncpg.Pool = Depends(get_pool),
+    token_data: TokenPayload = Depends(security.access_token_required)
+     ):
+    redis = RedisCachedBackend(cache_ttl_seconds=3600)
+    user_id = int(token_data.sub)
     async with pool.acquire() as conn:
         histoty = await conn.fetch('''
             SELECT *
             FROM order_taxi
+            WHERE user_id=$1
             ORDER BY created_at DESC
-            ''')
-        return [dict(row) for row in histoty]
+            ''', user_id)
+
+        history_list = [dict(row) for row in histoty]
+        await redis.set_json(
+            entity="history",
+            identifier=user_id,
+            value=history_list
+             )
+
+        return history_list

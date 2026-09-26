@@ -13,12 +13,12 @@ class RedisCachedBackend:
         self.cache_ttl_seconds = cache_ttl_seconds
         self.prefix = 'taxi'
 
-    def _make_key(self, entity: str, identifier: str) -> str:
+    def _make_key(self, entity: str, identifier: str | int) -> str:
         return f'{self.prefix}:{entity}:{identifier}'
 
     async def set_json(self,
                        entity: str,
-                       identifier: str,
+                       identifier: str | int,
                        value: dict | list[dict]
                        ):
         key = self._make_key(entity=entity, identifier=identifier)
@@ -27,7 +27,7 @@ class RedisCachedBackend:
 
     async def get_json(self,
                        entity: str,
-                       identifier: str
+                       identifier: str | int
                        ) -> dict | list[dict] | None:
         key = self._make_key(entity, identifier)
         data = await self.redis.get(key)
