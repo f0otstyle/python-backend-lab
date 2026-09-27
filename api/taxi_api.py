@@ -10,6 +10,7 @@ from error_handler import OrderError, SearchError
 from logging_log import logger, log
 from authx import AuthXConfig, AuthX, TokenPayload
 from redis_cache import RedisCachedBackend
+from redis_rate_limiter import Ratelimit
 import asyncio
 import asyncpg
 import bcrypt
@@ -91,6 +92,7 @@ async def init_db():
 async def lifespan(app: FastAPI):
     db = await init_db()
     app.state.redis_cache = RedisCachedBackend(cache_ttl_seconds=None)
+    app.state.redis_rate_limiter = Ratelimit()
     app.state.db = db
     yield
     await db.close()
@@ -160,6 +162,10 @@ async def get_cache(request: Request) -> RedisCachedBackend:
     return request.app.state.redis_cache
 
 
+async def get_rate_limiter(request: Request) -> Ratelimit:
+    return request.app.state.redis_rate_limiter
+
+
 @app.post('/registrate', status_code=HTTPStatus.CREATED)
 async def registrate(
     user: UserRegisterSchema,
@@ -195,9 +201,23 @@ async def registrate(
 async def login(
     response: Response,
     user: UserRegisterSchema,
-    pool: asyncpg.Pool = Depends(get_pool)
+    pool: asyncpg.Pool = Depends(get_pool),
+    rate_limiter: Ratelimit = Depends(get_rate_limiter)
         ):
     username = user.username
+
+    is_blocked = await rate_limiter.is_limited(
+        identifier=username,
+        endpoint="login",
+        max_request=5,
+        window_seconds=60
+    )
+    if is_blocked:
+        raise HTTPException(
+            status_code=HTTPStatus.TOO_MANY_REQUESTS,
+            detail="Слишком много попыток входа. Подождите 60 секунд."
+        )
+
     async with pool.acquire() as conn:
         existing = await conn.fetchrow('''
             SELECT *
