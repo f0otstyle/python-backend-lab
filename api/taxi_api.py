@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request, Header, Depends, Response
 from http import HTTPStatus
 from fastapi.encoders import jsonable_encoder
@@ -320,7 +321,8 @@ async def ordering_a_taxi(
     request: Request,
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     pool: asyncpg.Pool = Depends(get_pool),
-    token_data: TokenPayload = Depends(security.access_token_required)
+    token_data: TokenPayload = Depends(security.access_token_required),
+    cache: RedisCachedBackend = Depends(get_cache)
         ):
     '''Создаем заказ'''
     user_id = int(token_data.sub)
@@ -328,19 +330,26 @@ async def ordering_a_taxi(
     to_address = orders.to_address
     price = orders.price
 
+    UNLOCK_LUA_SCRIPT = """
+    if redis.call("get", KEYS[1]) == ARGV[1] then
+        return redis.call("del", KEYS[1])
+    else
+        return 0
+    end
+    """
+
     if not idempotency_key:
         raise HTTPException(
             status_code=HTTPStatus.BAD_REQUEST,
             detail="Поле 'idempotency_key' обязательно"
         )
-    current_time = datetime.now(timezone.utc).timestamp()
     async with pool.acquire() as conn:
         async with conn.transaction():
             existing = await conn.fetchrow('''
                 SELECT id, idempotency_key, from_address, to_address, price,
                     user_id, driver_id, created_at
-                FROM order_taxi WHERE idempotency_key=$1
-            ''', idempotency_key)
+                FROM order_taxi WHERE idempotency_key=$1 AND user_id=$2
+            ''', idempotency_key, user_id)
 
             if existing:
                 logger.info(f"Повторный запрос с ключом {idempotency_key}")
@@ -350,74 +359,96 @@ async def ordering_a_taxi(
                     headers={"Location": f"/taxi/{existing['id']}"}
                 )
 
-            duplicate = await conn.fetchrow('''
-                SELECT * FROM order_taxi WHERE to_address=$1 and user_id=$2
-            ''', to_address, user_id)
+    lock_key = f"lock:order:{user_id}:{idempotency_key}"
+    lock_token = str(uuid4())
+    lock_acquired = await cache.redis.set(lock_key, lock_token, nx=True, ex=30)
 
-            if duplicate:
-                created_at = duplicate['created_at'].timestamp()
-                time_diff = current_time - created_at
-                if time_diff < TIME:
-                    logger.warning(
-                        f'Попытка создать дубликат заказа для {to_address} (прошло {time_diff:.1f} с)'
-                        )
-                    raise OrderError()
-                else:
-                    logger.info('Можно сделать новый заказ')
-            try:
-                new_order = await conn.fetchrow('''
-                    INSERT INTO order_taxi (
-                    idempotency_key, from_address, to_address, price,
-                    user_id)
-                    VALUES ($1, $2, $3, $4, $5)
-                    RETURNING id, idempotency_key, from_address, to_address, price,
-                    user_id, driver_id, created_at''', idempotency_key, from_address, to_address, price, user_id)
-            except asyncpg.UniqueViolationError:
-                existing = await conn.fetchrow(
-                    'SELECT id, idempotency_key, from_address, to_address, price, user_id, driver_id, created_at FROM order_taxi WHERE idempotency_key = $1',
-                    idempotency_key
-                )
+    if not lock_acquired:
+        logger.info(
+            f"Запрос {idempotency_key} уже обрабатывается. Ждем 0.1 сек"
+            )
+        await asyncio.sleep(0.1)
+
+        async with pool.acquire() as conn:
+            existing = await conn.fetchrow('''
+                SELECT id, idempotency_key, from_address, to_address, price,
+                    user_id, driver_id, created_at
+                FROM order_taxi WHERE idempotency_key=$1 AND user_id=$2
+            ''', idempotency_key, user_id)
+
+            if existing:
                 return JSONResponse(
                     status_code=HTTPStatus.CREATED,
                     content=jsonable_encoder(dict(existing)),
                     headers={"Location": f"/taxi/{existing['id']}"}
                 )
 
-            appoint = await taxi_to_appoint(new_order['id'], conn)
+        raise HTTPException(
+            status_code=HTTPStatus.CONFLICT,
+            detail="Запрос уже обрабатывается. Пожалуйста, повторите позже."
+        )
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                try:
+                    new_order = await conn.fetchrow('''
+                        INSERT INTO order_taxi (
+                        idempotency_key, from_address,
+                        to_address, price, user_id)
+                        VALUES ($1, $2, $3, $4, $5)
+                        RETURNING id, idempotency_key, from_address,
+                        to_address, price,
+                        user_id, driver_id, created_at
+                    ''', idempotency_key, from_address, to_address, price, user_id)
 
-            if appoint:
-                logger.info(f'Водитель назначен на заказ {new_order["id"]}')
+                except asyncpg.UniqueViolationError:
+                    existing = await conn.fetchrow('''
+                        SELECT id, idempotency_key,
+                        from_address, to_address, price,
+                        user_id, driver_id, created_at
+                        FROM order_taxi
+                        WHERE idempotency_key = $1 AND user_id=$2
+                    ''', idempotency_key, user_id)
+                    return JSONResponse(
+                        status_code=HTTPStatus.CREATED,
+                        content=jsonable_encoder(dict(existing)),
+                        headers={"Location": f"/taxi/{existing['id']}"}
+                    )
 
-                drive = await taxi_ride(new_order['id'], conn)
-                if drive:
-                    pay = await pay_to_taxi(new_order['id'], conn)
-                    logger.info(
-                        f'Заказ {new_order["id"]} закончен, оплата'
-                        )
-                    if pay:
-                        logger.info(f'Заказ {new_order["id"]}, успешно оплачен')
+                appoint = await taxi_to_appoint(new_order['id'], conn)
+                if appoint:
+                    logger.info(f'Водитель назначен на заказ {new_order["id"]}')
+                    drive = await taxi_ride(new_order['id'], conn)
+                    if drive:
+                        pay = await pay_to_taxi(new_order['id'], conn)
+                        if pay:
+                            logger.info(
+                                f'Заказ {new_order["id"]}, успешно оплачен'
+                                )
+                        else:
+                            logger.info(
+                                f'Заказ {new_order["id"]}, оплата не прошла'
+                                )
                     else:
                         logger.info(
-                            f'Заказ {new_order["id"]}, оплата не прошла'
+                            f'Поездка не закончена по заказ {new_order["id"]}'
                             )
                 else:
-                    logger.info(f'Поездка не закончена по заказ {new_order["id"]}')
-            else:
-                logger.warning(f'Заказ {new_order["id"]} создан без водителя')
+                    logger.warning(
+                        f'Заказ {new_order["id"]} создан без водителя'
+                        )
 
-            order = await conn.fetchrow('''
-                SELECT id, idempotency_key, from_address, to_address, price,
-                    user_id, driver_id, created_at
-                FROM order_taxi
-                WHERE id = $1
-            ''', new_order['id'])
+                logger.info(f'Новый заказ сделан с ID {new_order["id"]}')
 
-            logger.info(f'Новый заказ сделан с ID {order["id"]}')
-            return JSONResponse(
+                return JSONResponse(
                     status_code=HTTPStatus.CREATED,
-                    content=jsonable_encoder(dict(order)),
-                    headers={"Location": f"/taxi/{order['id']}"}
+                    content=jsonable_encoder(dict(new_order)),
+                    headers={"Location": f"/taxi/{new_order['id']}"}
                 )
+
+    finally:
+        logger.info(f"Снимаем блокировку для {idempotency_key}")
+        await cache.redis.eval(UNLOCK_LUA_SCRIPT, 1, lock_key, lock_token)
 
 
 @log
