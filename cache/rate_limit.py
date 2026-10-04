@@ -45,3 +45,4 @@ class Ratelimit:
         _, current_count, _, _ = res
         if current_count >= max_request:
             return True
+        return False
