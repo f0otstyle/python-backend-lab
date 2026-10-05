@@ -1,21 +1,25 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
-from fastapi import FastAPI, HTTPException, Request, Header, Depends, Response
+from fastapi import FastAPI, HTTPException, Request, Header, Depends, Response, Security
 from http import HTTPStatus
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
+from denylist import Denylist, ensure_not_revoked
+from redis.asyncio import Redis
 from error_handler import OrderError, SearchError
 from logging_log import logger, log
-from authx import AuthXConfig, AuthX, TokenPayload
+from authx import TokenPayload
 from redis_cache import RedisCachedBackend
 from redis_rate_limiter import Ratelimit
 import asyncio
 import asyncpg
 import bcrypt
 import os
+from deps import security, get_cache, config
 
 
 DB_HOST = os.getenv('DB_HOST', 'localhost')
@@ -94,23 +98,12 @@ async def lifespan(app: FastAPI):
     db = await init_db()
     app.state.redis_cache = RedisCachedBackend(cache_ttl_seconds=None)
     app.state.redis_rate_limiter = Ratelimit()
+    app.state.denylist = Denylist()
     app.state.db = db
     yield
     await db.close()
 
 app = FastAPI(lifespan=lifespan)
-
-
-config = AuthXConfig(
-    JWT_SECRET_KEY=os.getenv('JWT_SECRET_KEY', 'SECRET-KEY'),
-    JWT_TOKEN_LOCATION=['cookies'],
-    JWT_ACCESS_COOKIE_NAME='my_cookie',
-    JWT_ACCESS_TOKEN_EXPIRES=timedelta(days=1),
-    JWT_COOKIE_CSRF_PROTECT=False,
-    )
-
-
-security: AuthX = AuthX(config=config)
 
 
 class OrderCreate(BaseModel):
@@ -159,12 +152,12 @@ async def get_pool(request: Request):
     return request.app.state.db
 
 
-async def get_cache(request: Request) -> RedisCachedBackend:
-    return request.app.state.redis_cache
-
-
 async def get_rate_limiter(request: Request) -> Ratelimit:
     return request.app.state.redis_rate_limiter
+
+
+async def denylist(request: Request) -> Denylist:
+    return request.app.state.denylist
 
 
 @app.post('/registrate', status_code=HTTPStatus.CREATED)
@@ -256,18 +249,24 @@ async def login(
 
 @app.get('/users/me',
          status_code=HTTPStatus.OK,
-         dependencies=[Depends(security.access_token_required)]
          )
-async def users_me():
+async def users_me(dependencies: TokenPayload = Depends(ensure_not_revoked)):
     logger.info('Вы авторизованы')
     return {'data': 'Вы авторизованы'}
 
 
 @app.post('/logout', status_code=HTTPStatus.OK)
-async def logout(response: Response):
-    response.delete_cookie("my_cookie")
-    logger.info('Вы вышли из системы')
-    return {"message": "Вы вышли из системы"}
+async def logout(
+    response: Response,
+    credentials: HTTPAuthorizationCredentials = Security(
+        security.access_token_required
+        ),
+    redis: Redis = Depends(get_cache),
+    denylist: Denylist = Depends(denylist)
+     ):
+    await denylist.revoke_token(redis, credentials.credentials)
+    security.unset_access_cookies(response)
+    return {"detail": "logged out"}
 
 
 @app.post('/drivers', status_code=HTTPStatus.CREATED)
@@ -670,10 +669,9 @@ async def order_delete(
             RETURNING id, idempotency_key, to_address, created_at
         ''', order_id)
         if existing:
+            await cache.delete_json(entity='order', identifier=order_id)
             logger.info(f'Заказ по номеру {existing["id"]} удален')
             return
-
-    await cache.delete_json(entity='order', identifier=order_id)
 
     logger.warning(f'Попытка удалить несуществующий заказ {order_id}')
     raise SearchError()
