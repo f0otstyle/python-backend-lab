@@ -1433,6 +1433,93 @@ COMMIT;
 **Вывод**
 - Уровень изоляции REPEATABLE READ не защищает от потерянного обновления автоматически. Вместо этого он обнаруживает конфликт при параллельных UPDATE и выбрасывает ошибку: ```ERROR:  could not serialize access due to concurrent update```. Это лучше, чем тихая потеря данных и перезапись в **READ UNCOMMITTED либо READ COMMITTED**, но требует от приложения явной обработки: повторного выполнения транзакции (retry).
 
+### Эксперимент 5 Невидимость незакоммиченного INSERT
+
+**Ожидани**
+- Мы не увидим не закомиченное обновление/вставку так как по умолчанию стоит уровень изоляции Red Commited и видит только закомиченные даннеы,если захотим поставить уровень изоляции Read Uncommited то в PostgareSQL он эквивалентен Red Commited повторяюсь видим закомиченные данные. Если мы говорим про вставку и паралельно транзакции сделаем обычное создание такой же записи с таким же ключом, то терминал скорее всего упадет в состояния ожидания, так как под копотом PostgreSQL создает запись и присваивает ей номер транзакции xmin/xmax, то паралельная такая запись не создастся.  
+
+**Проверка на незакомиченное обновление**
+
+ - Терминал 1 
+ ```
+ INSERT INTO order_taxi (idempotency_key, to_address, price, user_id)
+ VALUES ('seed', 'Улица Пушкина', 100, 1);
+ -- Паралельно идет 2 терминал
+ SELECT id, to_address FROM order_taxi WHERE id = 1;
+ SELECT xmin, xmax, to_address FROM order_taxi WHERE id = 1;
+ ```
+
+ - Терминал 2
+ ```
+  BEGIN;
+  UPDATE order_taxi SET to_address = 'Улица Тестовая' WHERE id = 1;
+ ```
+
+ **Результат**
+ - 1 `SELECT` 
+ |id | to_address  |
+ |---|-------|
+ | 1 |  Улица Пушкина  |
+
+ - 2 `SELECT` 
+ |xmin | xmax  | to_address  |
+ |---|-------|----|
+ | 749 |  750  | Улица Пушкина  |
+
+  **Вывод**
+  - Ожидание подтвердилось, обновление не видны уровень изоляции `Red Commited` не позволяет читать незакомиченные данные, но из второго `SELECT` что у xmax значение не 0 это говорит о том что эту запсись, транзакция изменила, но не закомитила. 
+
+**Проверка на незакомиченную вставку с ROLLBACK**
+
+- Терминал 1 
+ ```
+ SELECT id, idempotency_key, to_address FROM order_taxi WHERE idempotency_key = 'mvcc-dup';
+ ```
+ |id | idempotency_key  | to_address  |
+ |---|-------|-------|
+ | - |  -  |  -  |
+
+ ```
+ INSERT INTO order_taxi (idempotency_key, to_address, price, user_id) VALUES ('mvcc-dup', 'Улица Б', 200, 1);
+ INSERT 0 1
+ ```
+
+ - Терминал 2
+ ```
+  BEGIN;
+  INSERT INTO order_taxi (idempotency_key, to_address, price, user_id) VALUES ('mvcc-dup', 'Улица А', 150, 1);
+  -- Ожидаем
+  ROLLBACK:
+ ```
+
+**Проверка на незакомиченную вставку с COMMIT**
+
+- Терминал 1 
+ ```
+ SELECT id, idempotency_key, to_address FROM order_taxi WHERE idempotency_key = 'mvcc-dup2';
+ ```
+ |id | idempotency_key  | to_address  |
+ |---|-------|-------|
+ | - |  -  |  -  |
+
+ ```
+ INSERT INTO order_taxi (idempotency_key, to_address, price, user_id) VALUES ('mvcc-dup2', 'Улица Б', 200, 1);
+ ERROR:  duplicate key value violates unique constraint "order_taxi_user_id_idempotency_key_key"
+ DETAIL:  Key (user_id, idempotency_key)=(1, mvcc-dup2) already exists.
+ ```
+
+ - Терминал 2
+ ```
+  BEGIN;
+  INSERT INTO order_taxi (idempotency_key, to_address, price, user_id) VALUES ('mvcc-dup2', 'Улица А', 150, 1);
+  -- Ожидаем
+  COMMIT:
+ ```
+
+**Вывод**
+ - Ожижание потвердилось, при `ROLLBACK`, паралельная идентичная запись создалась, а при `COMMIT` нет и на паралельную запись вышла ошибка. Пока `INSERT` не закоммичен другая транзакция при `SELECT`, ничего не видит, так как уровень изоляции `Red Commited` не позволяет читать незакоммиченные данные, а второй INSERT с тем же уникальным ключом ждет ответа от первой транзакции до того момента пока не произойдет `ROOLBACK`/`COMMIT` и от сюда будет ответ либо произойдет сохранение при откате транзакции, либо ошибка при коммите транзакции.  
+
+
 ## Блокировки и дедлоки:
 
 - Табличные блокировки — блокируют всю таблицу.
