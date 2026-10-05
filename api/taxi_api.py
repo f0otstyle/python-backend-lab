@@ -20,6 +20,7 @@ import asyncpg
 import bcrypt
 import os
 from deps import security, get_cache, config
+from typing import cast
 
 
 DB_HOST = os.getenv('DB_HOST', 'localhost')
@@ -96,7 +97,7 @@ async def init_db():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db = await init_db()
-    app.state.redis_cache = RedisCachedBackend(cache_ttl_seconds=None)
+    app.state.redis_cache = RedisCachedBackend(cache_ttl_seconds=60)
     app.state.redis_rate_limiter = Ratelimit()
     app.state.denylist = Denylist()
     app.state.db = db
@@ -203,7 +204,7 @@ async def login(
     is_blocked = await rate_limiter.is_limited(
         identifier=username,
         endpoint="login",
-        max_request=5,
+        max_request=7,
         window_seconds=60
     )
     if is_blocked:
@@ -597,9 +598,6 @@ async def order_search(
     cache: RedisCachedBackend = Depends(get_cache)
         ):
     '''Поиск конкретного заказа'''
-    from typing import cast
-
-    test_ttl = 1
 
     order = await cache.get_json(entity="order", identifier=order_id)
     if order:
@@ -623,7 +621,7 @@ async def order_search(
                     await cache.set_json(entity="order",
                                          identifier=order_id,
                                          value=dict(existing),
-                                         ex_time=test_ttl
+                                         ex_time=60
                                          )
                     logger.info(f'Кэш для заказа {order_id} обновлен')
                     return JSONResponse(

@@ -476,6 +476,19 @@ end
 return count
 ```
 
+**rate-limiter**
+```
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then
+   redis.call('EXPIRE', KEYS[1], 60)
+end
+if count >= 5 then
+   return 0
+end
+return 1
+```
+
+
 ### Эксперимент №7: `INCR` + `EXPIRE` не атомарны
 
 **Цель**

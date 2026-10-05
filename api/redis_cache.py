@@ -5,6 +5,18 @@ import json
 DATABASE_URL_redis = 'redis://redis:6379'
 
 
+LUA_SET_HASH = '''
+    local ttl = tonumber(ARGV[#ARGV])
+    for i = 1, #ARGV - 1, 2 do
+        redis.call('HSET', KEYS[1], ARGV[i], ARGV[i + 1])
+    end
+    if ttl > 0 then
+         redis.call('EXPIRE', KEYS[1], ttl)
+    end
+    return 'OK'
+    '''
+
+
 class RedisCachedBackend:
     def __init__(self, cache_ttl_seconds: int | None):
         self.redis = Redis.from_url(
@@ -12,6 +24,7 @@ class RedisCachedBackend:
             decode_responses=True
             )
         self.cache_ttl_seconds = cache_ttl_seconds
+        self.set_hash_script = self.redis.register_script(LUA_SET_HASH)
         self.prefix = 'taxi'
 
     def _make_key(self, entity: str, identifier: str | int) -> str:
@@ -45,11 +58,18 @@ class RedisCachedBackend:
                        value: dict | list[dict]
                        ):
         key = self._make_key(entity, identifier)
-        flat = {k: (v if isinstance(v, str) else json.dumps(v, ensure_ascii=False))
+        flat = {k: (v if isinstance(v, str) else json.dumps(
+            v,
+            ensure_ascii=False
+            ))
                 for k, v in value.items()}
-        await self.redis.hset(key, mapping=flat)
-        if self.cache_ttl_seconds is not None:
-            await self.redis.expire(key, self.cache_ttl_seconds)
+
+        args = []
+        for field, val in flat.items():
+            args.extend([field, val])
+        args.append(self.cache_ttl_seconds or 0)
+
+        await self.set_hash_script(keys=[key], args=args)
         return key
 
     async def get_hash(self, entity: str, identifier: str):
@@ -64,7 +84,10 @@ class RedisCachedBackend:
             key = self._make_key(entity, f'{identifier}:{field}')
             await self.redis.set(
                 key,
-                val if isinstance(val, str) else json.dumps(val, ensure_ascii=False),
+                val if isinstance(val, str) else json.dumps(
+                    val,
+                    ensure_ascii=False
+                    ),
                 ex=self.cache_ttl_seconds,
             )
             keys.append(key)

@@ -11,5 +11,8 @@ COPY error_handler.py .
 COPY logging_log.py .
 COPY redis_cache.py .
 COPY redis_rate_limiter.py .
+COPY denylist.py .
+COPY deps.py .
+
 
 CMD ["uvicorn", "taxi_api:app", "--host", "0.0.0.0", "--port", "8000"]
