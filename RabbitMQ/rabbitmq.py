@@ -31,10 +31,13 @@ async def declare_order_queue(
 async def publish_json(
         exchange: AbstractExchange,
         routing_key: str,
-        data: dict
+        data: dict,
         ):
     message = aio_pika.Message(
         json.dumps(data).encode(),
         delivery_mode=aio_pika.DeliveryMode.PERSISTENT
         )
-    await exchange.publish(message, routing_key=routing_key)
+    await exchange.publish(
+        message,
+        routing_key=routing_key,
+        )

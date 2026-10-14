@@ -6,3 +6,4 @@ pytest
 httpx2
 authx
 bcrypt
+redis==8.1.0

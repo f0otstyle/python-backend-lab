@@ -65,5 +65,4 @@ async def create_order_taxi(payload: Ride, request: Request):
         routing_key=ROUTING_KEY,
         data=event_data
         )
-
-    return 'Успешная отправка'
+    return {"status": "ok", "message": "Успешно"}
