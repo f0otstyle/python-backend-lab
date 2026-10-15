@@ -13,6 +13,7 @@ COPY redis_cache.py .
 COPY redis_rate_limiter.py .
 COPY denylist.py .
 COPY deps.py .
+COPY rabbitmq.py .
 
 
 CMD ["uvicorn", "taxi_api:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -1,7 +1,20 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
-from fastapi import FastAPI, HTTPException, Request, Header, Depends, Response, Security
+from fastapi import (FastAPI,
+                     HTTPException,
+                     Request,
+                     Header,
+                     Depends,
+                     Response,
+                     Security
+                     )
+from rabbitmq import (connect_rabbitmq,
+                      setup_channel,
+                      declare_queue,
+                      event_publish_json,
+                      ROUTING_KEY
+                      )
 from http import HTTPStatus
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
@@ -74,35 +87,31 @@ async def init_db():
             UNIQUE (user_id, idempotency_key)
         )
         """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS rides (
-            id SERIAL PRIMARY KEY,
-            order_id INTEGER REFERENCES order_taxi(id) ON DELETE CASCADE,
-            driver_id INTEGER REFERENCES drivers(id),
-            user_id INTEGER REFERENCES users(id),
-            started_at TIMESTAMPTZ DEFAULT NOW(),
-            finished_at TIMESTAMPTZ,
-            duration INTEGER
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS taxi_card (
-            user_id INTEGER PRIMARY KEY REFERENCES users(id),
-            balance NUMERIC NOT NULL CHECK (balance >= 0) DEFAULT 0
-            )
-        """)
     return db_pool
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db = await init_db()
+    connection = await connect_rabbitmq()
+    channel, exchange = await setup_channel(connection)
+
+    await declare_queue(channel, exchange)
+
+    app.state.channel = channel
+    app.state.exchange = exchange
+    app.state.connection = connection
+
     app.state.redis_cache = RedisCachedBackend(cache_ttl_seconds=60)
     app.state.redis_rate_limiter = Ratelimit()
+
     app.state.denylist = Denylist()
+
     app.state.db = db
+
     yield
     await db.close()
+    await connection.close()
 
 app = FastAPI(lifespan=lifespan)
 
@@ -415,30 +424,16 @@ async def ordering_a_taxi(
                         headers={"Location": f"/taxi/{existing['id']}"}
                     )
 
-                appoint = await taxi_to_appoint(new_order['id'], conn)
-                if appoint:
-                    logger.info(f'Водитель назначен на заказ {new_order["id"]}')
-                    drive = await taxi_ride(new_order['id'], conn)
-                    if drive:
-                        pay = await pay_to_taxi(new_order['id'], conn)
-                        if pay:
-                            logger.info(
-                                f'Заказ {new_order["id"]}, успешно оплачен'
-                                )
-                        else:
-                            logger.info(
-                                f'Заказ {new_order["id"]}, оплата не прошла'
-                                )
-                    else:
-                        logger.info(
-                            f'Поездка не закончена по заказ {new_order["id"]}'
-                            )
-                else:
-                    logger.warning(
-                        f'Заказ {new_order["id"]} создан без водителя'
-                        )
+                event = {
+                    "order_id": new_order['id']
+                }
 
-                logger.info(f'Новый заказ сделан с ID {new_order["id"]}')
+                await event_publish_json(
+                    routing_key=ROUTING_KEY,
+                    exchange=app.state.exchange,
+                    data=event
+                    )
+                logger.info('Сообщение отправленно в RabbitMQ')
 
                 return JSONResponse(
                     status_code=HTTPStatus.CREATED,
@@ -449,103 +444,6 @@ async def ordering_a_taxi(
     finally:
         logger.info(f"Снимаем блокировку для {idempotency_key}")
         await cache.redis.eval(UNLOCK_LUA_SCRIPT, 1, lock_key, lock_token)
-
-
-@log
-async def taxi_to_appoint(
-    order_id: int,
-    conn: asyncpg.Connection
-        ):
-    '''Назначаем водителя для поездки'''
-    driver = await conn.fetchrow('SELECT id FROM drivers ORDER BY random() LIMIT 1 FOR UPDATE SKIP LOCKED')
-    if not driver:
-        return None
-
-    result = await conn.fetchrow('''
-        UPDATE order_taxi
-        SET driver_id = $1
-        WHERE id = $2 AND driver_id IS NULL
-        RETURNING id, from_address, to_address, driver_id
-    ''', driver["id"], order_id)
-
-    if not result:
-        return None
-
-    return dict(result) if result else None
-
-
-@log
-async def taxi_ride(
-    order_id: int,
-    conn: asyncpg.Connection
-        ):
-    '''Симуляция поездки'''
-    order = await conn.fetchrow('''
-        SELECT * FROM order_taxi WHERE id=$1
-    ''', order_id)
-
-    if not order:
-        logger.warning(f'Заказ {order_id} не найден или нет водителя')
-        return None
-
-    logger.info(f'Поездка по заказу {order_id} началась')
-
-    start_time = datetime.now(timezone.utc)
-    duration = 1
-    await asyncio.sleep(duration)
-    end_time = datetime.now(timezone.utc)
-
-    ride = await conn.fetchrow('''
-        INSERT INTO rides (order_id, driver_id, user_id, started_at, finished_at)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING id, order_id, driver_id, duration
-    ''', order_id, order['driver_id'], order['user_id'], start_time, end_time)
-
-    logger.info(f'Поездка по заказу {order_id} завершена за {duration} сек')
-
-    return dict(ride)
-
-
-@log
-async def pay_to_taxi(
-    order_id: int,
-    conn: asyncpg.Connection
-        ):
-    '''Оплата поездки'''
-    async with conn.transaction():
-        order = await conn.fetchrow('''
-            SELECT * FROM order_taxi WHERE id=$1
-        ''', order_id)
-        if not order:
-            logger.warning(f'Заказ {order_id} не найден или нет водителя')
-            return None
-
-        card = await conn.fetchrow('''
-            SELECT balance FROM taxi_card WHERE user_id = $1 FOR UPDATE
-        ''', order['user_id'])
-
-        if not card:
-            logger.warning(f'У пользователя {order["user_id"]} нет карты')
-            return False
-
-        if card['balance'] < order['price']:
-            logger.warning('Недостаточно средств на карте')
-            return False
-
-        await conn.execute('''
-            UPDATE taxi_card
-            SET balance = balance - $1
-            WHERE user_id = $2
-        ''', order['price'], order['user_id'])
-
-        await conn.execute('''
-            UPDATE drivers
-            SET money = money + $1
-            WHERE id = $2
-            ''', order['price'], order['driver_id'])
-
-        logger.info(f'Списано {order["price"]} с карты пользователя {order["user_id"]}')
-        return True
 
 
 @app.post('/pay/{user_id}',

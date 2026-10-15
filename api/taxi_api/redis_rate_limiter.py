@@ -1,8 +1,13 @@
+import os
+
 from redis.asyncio import Redis
 from time import time
 import random
 
-DATABASE_URL_redis = 'redis://redis:6379'
+REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
+REDIS_PORT = os.getenv('REDIS_PORT', '6379')
+
+DATABASE_URL_redis = f"redis://{REDIS_HOST}:{REDIS_PORT}"
 
 
 class Ratelimit:

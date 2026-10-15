@@ -1,4 +1,5 @@
 import json
+import os
 
 from aio_pika.abc import (
     AbstractChannel,
@@ -8,28 +9,31 @@ from aio_pika.abc import (
     )
 import aio_pika
 
-ORDER_EXCHANGE = "taxi_exchange"
-ORDER_QUEUE = 'taxi_queue'
-ROUTING_KEY = "taxi_create"
+RABBITMQ_HOST = os.getenv('RABBITMQ_HOST', 'localhost')
+RABBITMQ_URL = f"amqp://guest:guest@{RABBITMQ_HOST}:5672/"
 
-DLX_EXCHANGE = "taxi.dlx"
-DLQ_QUEUE = "taxi_dlq"
-DLQ_ROUTING_KEY = "taxi_dead.letter"
+EXCHANGE_NAME = "taxi_rides_exchange"
+QUEUE_NAME = "taxi_rides_queue"
+ROUTING_KEY = "ride.create"
 
-RETRY_QUEUE = "taxi_retry_queue"
-RETRY_ROUTING_KEY = "taxi_retry"
+DLX_EXCHANGE = "taxi_rides.dlx"
+DLQ_QUEUE = "taxi_rides_dlq"
+DLQ_ROUTING_KEY = "ride.dead_letter"
+
+RETRY_QUEUE = "taxi_rides_retry_queue"
+RETRY_ROUTING_KEY = "ride.retry"
 RETRY_TTL_MS = 5000
 MAX_RETRIES = 3
 
 
 async def connect_rabbitmq():
-    return await aio_pika.connect_robust("amqp://guest:guest@localhost:5672/")
+    return await aio_pika.connect_robust(RABBITMQ_URL)
 
 
 # Обменники
-async def declare_order_exchange(connect: AbstractConnection):
+async def setup_channel(connect: AbstractConnection):
     channel = await connect.channel(publisher_confirms=True)
-    exchange = await channel.declare_exchange(ORDER_EXCHANGE, durable=True)
+    exchange = await channel.declare_exchange(EXCHANGE_NAME, durable=True)
     await channel.set_qos(prefetch_count=1)
 
     return channel, exchange
@@ -40,12 +44,12 @@ async def declare_dlx_exchange(channel: AbstractChannel):
 
 
 # Очереди
-async def declare_order_queue(
+async def declare_queue(
         channel: AbstractChannel,
         exchange: AbstractExchange
          ):
     queue: AbstractQueue = await channel.declare_queue(
-        name=ORDER_QUEUE,
+        name=QUEUE_NAME,
         durable=True,
         arguments={
             "x-dead-letter-exchange": DLX_EXCHANGE,
@@ -59,7 +63,7 @@ async def declare_order_queue(
     return queue
 
 
-async def declare_dlx_order_queue(
+async def declare_dlx_queue(
         channel: AbstractChannel,
         exchange: AbstractExchange
          ):
@@ -71,7 +75,7 @@ async def declare_dlx_order_queue(
     return queue_dlx
 
 
-async def declare_retry_order_queue(
+async def declare_retry_queue(
         channel: AbstractChannel,
          ):
     queue = await channel.declare_queue(
@@ -79,14 +83,14 @@ async def declare_retry_order_queue(
         durable=True,
         arguments={
             "x-message-ttl": RETRY_TTL_MS,
-            "x-dead-letter-exchange": ORDER_EXCHANGE,
+            "x-dead-letter-exchange": EXCHANGE_NAME,
             "x-dead-letter-routing-key": ROUTING_KEY,
         },
     )
     return queue
 
 
-async def publish_json(
+async def event_publish_json(
         exchange: AbstractExchange,
         routing_key: str,
         data: dict,

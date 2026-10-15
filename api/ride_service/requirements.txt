@@ -4,3 +4,4 @@ asyncpg
 authx
 bcrypt
 redis==8.1.0
+aio-pika
