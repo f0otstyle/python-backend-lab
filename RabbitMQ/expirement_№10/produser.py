@@ -49,11 +49,12 @@ app = FastAPI(lifespan=lifespan)
 
 
 @app.post("/taxi")
-async def create_order_taxi(payload: Ride, request: Request):
+async def create_order_taxi(payload: Ride, request: Request, indenpotent_key: str):
     global count
 
     ride = {
         "ride_id": count,
+        "ride_indenpotent_key": indenpotent_key,
         "user_name": payload.user_name,
         "driver": payload.driver,
         "car": payload.car,
@@ -67,7 +68,7 @@ async def create_order_taxi(payload: Ride, request: Request):
     count += 1
 
     event_data = {
-        "event_id": str(uuid4()),
+        "event_id": ride["ride_indenpotent_key"],
         "event": "order.created",
         "ride": ride
     }

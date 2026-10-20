@@ -11,7 +11,7 @@
 
 ## RabbitMQ
 > Полный конспект по брокерам сообщений RabbitMQ находится в папке `rabbitmq`:
-> **[Смотреть `RabbitMQ-notes.md`](./rabbitmq/RabbitMQ-notes.md)**
+> **[Смотреть `Rabbitmq-notes.md`](./rabbitmq/Rabbitmq-notes.md)**
 
 ## Содержание
 - [№ 1 Параллелизм](#-1-эксперименты-с-параллелизмом-в-python)

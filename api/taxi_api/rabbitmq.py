@@ -93,11 +93,13 @@ async def declare_retry_queue(
 async def event_publish_json(
         exchange: AbstractExchange,
         routing_key: str,
+        event_id: str,
         data: dict,
         ):
     message = aio_pika.Message(
         json.dumps(data).encode(),
-        delivery_mode=aio_pika.DeliveryMode.PERSISTENT
+        delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+        headers={"event_id": event_id}
         )
     await exchange.publish(
         message,

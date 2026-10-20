@@ -1,7 +1,8 @@
 import asyncio
 from datetime import datetime, timezone
 import json
-
+from uuid import uuid4
+from redis.asyncio import Redis
 from fastapi import FastAPI
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
@@ -22,6 +23,8 @@ DB_PORT = int(os.getenv('DB_PORT', 5432))
 DB_USER = os.getenv('POSTGRES_USER', 'pgAdmin')
 DB_PASSWORD = os.getenv('POSTGRES_PASSWORD', 'postgres')
 DB_NAME = os.getenv('POSTGRES_DB', 'taxi_db')
+REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
+REDIS_PORT = os.getenv('REDIS_PORT', 6379)
 
 TIME = 5
 
@@ -64,11 +67,12 @@ async def init_db():
 async def lifespan(app: FastAPI):
     global db_pool
     db_pool = await init_db()
+    redis = Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
     connection = await connect_rabbitmq()
     channel, exchange = await setup_channel(connection)
 
-
+    app.state.redis = redis
     app.state.channel = channel
     app.state.exchange = exchange
     app.state.connection = connection
@@ -97,10 +101,34 @@ class MoneySchema(BaseModel):
 
 
 async def handler_order(message: AbstractIncomingMessage):
-    async with message.process():
+    async with message.process(ignore_processed=True):
         try:
-            event_data = json.loads(message.body.decode())
-            order_id = event_data.get('order_id', 'Данного заказа нет')
+            body_str = message.body.decode()
+            event_data = json.loads(body_str)
+
+            if isinstance(event_data, str):
+                event_data = json.loads(event_data)
+            logger.info(f"Заголовки: {message.headers}")
+
+            order_id = event_data.get('id')
+            event_id = message.headers.get('event_id') or event_data.get('event_id')
+
+            logger.info(f"event_id: {event_id}, order_id: {order_id}")
+
+            if not event_id or not order_id:
+                logger.error("В сообщении нет event_id или id заказа")
+                await message.nack(requeue=False)
+                return
+
+            dedep_key = f"dedep:order:{event_id}"
+            ock_acquired = await app.state.redis.set(
+                dedep_key, "1",
+                nx=True,
+                ex=3600
+                )
+            if not ock_acquired:
+                logger.info('Дубликат')
+                return
             death_count = len(message.headers.get("x-death", []))
             if death_count >= MAX_RETRIES:
                 logger.warning(f"Заказ {order_id} отправлен в DLQ после {death_count} попыток.")
@@ -166,18 +194,18 @@ async def taxi_ride(
         order = await conn.fetchrow('''
             SELECT * FROM order_taxi WHERE id=$1
         ''', order_id)
-
         if not order:
             logger.warning(f'Заказ {order_id} не найден или нет водителя')
             return None
 
-        logger.info(f'Поездка по заказу {order_id} началась')
+    logger.info(f'Поездка по заказу {order_id} началась')
 
-        start_time = datetime.now(timezone.utc)
-        duration = 1
-        await asyncio.sleep(duration)
-        end_time = datetime.now(timezone.utc)
+    start_time = datetime.now(timezone.utc)
+    duration = 1
+    await asyncio.sleep(duration)
+    end_time = datetime.now(timezone.utc)
 
+    async with db_pool.acquire() as conn:
         ride = await conn.fetchrow('''
             INSERT INTO rides (order_id, driver_id, user_id, started_at, finished_at)
             VALUES ($1, $2, $3, $4, $5)

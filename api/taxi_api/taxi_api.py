@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from decimal import Decimal
+import json
 from uuid import uuid4
 from fastapi import (FastAPI,
                      HTTPException,
@@ -410,6 +411,22 @@ async def ordering_a_taxi(
                         user_id, driver_id, created_at
                     ''', idempotency_key, from_address, to_address, price, user_id)
 
+                    event_id = str(uuid4())
+                    payload_json = json.dumps({
+                        'id': new_order['id'],
+                        'idempotency_key': new_order['idempotency_key'],
+                        'from_address': new_order['from_address'],
+                        'to_address': new_order['from_address'],
+                        'price': float(new_order['price']),
+                        'user_id': new_order['user_id']
+                    })
+
+                    await conn.fetchrow('''
+                        INSERT INTO outbox (
+                        event_id, event_type, payload, published)
+                        VALUES ($1, $2, $3, $4)
+                    ''', event_id, 'order.created', payload_json, False)
+
                 except asyncpg.UniqueViolationError:
                     existing = await conn.fetchrow('''
                         SELECT id, idempotency_key,
@@ -423,17 +440,6 @@ async def ordering_a_taxi(
                         content=jsonable_encoder(dict(existing)),
                         headers={"Location": f"/taxi/{existing['id']}"}
                     )
-
-                event = {
-                    "order_id": new_order['id']
-                }
-
-                await event_publish_json(
-                    routing_key=ROUTING_KEY,
-                    exchange=app.state.exchange,
-                    data=event
-                    )
-                logger.info('Сообщение отправленно в RabbitMQ')
 
                 return JSONResponse(
                     status_code=HTTPStatus.CREATED,
