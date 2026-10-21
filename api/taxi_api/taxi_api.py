@@ -1,4 +1,3 @@
-from datetime import datetime, timezone
 from decimal import Decimal
 import json
 from uuid import uuid4
@@ -10,12 +9,6 @@ from fastapi import (FastAPI,
                      Response,
                      Security
                      )
-from rabbitmq import (connect_rabbitmq,
-                      setup_channel,
-                      declare_queue,
-                      event_publish_json,
-                      ROUTING_KEY
-                      )
 from http import HTTPStatus
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
@@ -94,14 +87,6 @@ async def init_db():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db = await init_db()
-    connection = await connect_rabbitmq()
-    channel, exchange = await setup_channel(connection)
-
-    await declare_queue(channel, exchange)
-
-    app.state.channel = channel
-    app.state.exchange = exchange
-    app.state.connection = connection
 
     app.state.redis_cache = RedisCachedBackend(cache_ttl_seconds=60)
     app.state.redis_rate_limiter = Ratelimit()
@@ -112,7 +97,6 @@ async def lifespan(app: FastAPI):
 
     yield
     await db.close()
-    await connection.close()
 
 app = FastAPI(lifespan=lifespan)
 
@@ -416,7 +400,7 @@ async def ordering_a_taxi(
                         'id': new_order['id'],
                         'idempotency_key': new_order['idempotency_key'],
                         'from_address': new_order['from_address'],
-                        'to_address': new_order['from_address'],
+                        'to_address': new_order['to_address'],
                         'price': float(new_order['price']),
                         'user_id': new_order['user_id']
                     })

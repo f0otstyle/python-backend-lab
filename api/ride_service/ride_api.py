@@ -1,7 +1,6 @@
 import asyncio
 from datetime import datetime, timezone
 import json
-from uuid import uuid4
 from redis.asyncio import Redis
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -9,7 +8,9 @@ from contextlib import asynccontextmanager
 from logging_log import logger, log
 import asyncpg
 from aio_pika.abc import AbstractIncomingMessage
-from rabbitmq import (MAX_RETRIES, connect_rabbitmq, declare_dlx_exchange,
+from rabbitmq import (MAX_RETRIES,
+                      connect_rabbitmq,
+                      declare_dlx_exchange,
                       declare_dlx_queue,
                       setup_channel,
                       declare_queue,
@@ -72,6 +73,8 @@ async def lifespan(app: FastAPI):
     connection = await connect_rabbitmq()
     channel, exchange = await setup_channel(connection)
 
+    app.state.inflight = set()
+
     app.state.redis = redis
     app.state.channel = channel
     app.state.exchange = exchange
@@ -86,12 +89,19 @@ async def lifespan(app: FastAPI):
     app.state.connection = connection
     app.state.db = db_pool
 
-    await queue.consume(handler_order)
+    consumer_tag = await queue.consume(handler_order)
+    app.state.consumer_tag = consumer_tag
 
     yield
 
-    await db_pool.close()
+    await queue.cancel(consumer_tag)
+
+    if app.state.inflight:
+        await asyncio.gather(*app.state.inflight, return_exceptions=True)
+
     await connection.close()
+    await db_pool.close()
+    await redis.aclose()
 
 app = FastAPI(lifespan=lifespan)
 
@@ -120,6 +130,12 @@ async def handler_order(message: AbstractIncomingMessage):
                 await message.nack(requeue=False)
                 return
 
+            death_count = len(message.headers.get("x-death", []))
+            if death_count >= MAX_RETRIES:
+                logger.warning(f"Заказ {order_id} отправлен в DLQ после {death_count} попыток.")
+                await message.nack(requeue=False)
+                return
+
             dedep_key = f"dedep:order:{event_id}"
             ock_acquired = await app.state.redis.set(
                 dedep_key, "1",
@@ -127,31 +143,37 @@ async def handler_order(message: AbstractIncomingMessage):
                 ex=3600
                 )
             if not ock_acquired:
-                logger.info('Дубликат')
+                logger.info(f'Дубликат: событие {event_id} уже обработано')
+                await message.ack()
                 return
-            death_count = len(message.headers.get("x-death", []))
-            if death_count >= MAX_RETRIES:
-                logger.warning(f"Заказ {order_id} отправлен в DLQ после {death_count} попыток.")
-                await message.nack(requeue=False)
-                return
+
             appoint = await taxi_to_appoint(order_id=order_id)
             if not appoint:
                 logger.info(
-                    f'Поездка не закончена по заказ {order_id}'
+                    f'Поездка не начата по заказ {order_id}'
                 )
+                await app.state.redis.delete(dedep_key)
+                await message.nack(requeue=True)
                 return
+
             drive = await taxi_ride(order_id)
             if not drive:
                 logger.warning(
                     f'Заказ {order_id} создан без водителя'
                     )
+                await app.state.redis.delete(dedep_key)
+                await message.nack(requeue=True)
                 return
+
             pay = await pay_to_taxi(order_id)
             if not pay:
                 logger.info(
                     f'Заказ {order_id}, оплата не прошла'
                     )
+                await app.state.redis.delete(dedep_key)
+                await message.nack(requeue=True)
                 return
+
             logger.info(
                 f'Заказ {order_id}, успешно оплачен'
                 )

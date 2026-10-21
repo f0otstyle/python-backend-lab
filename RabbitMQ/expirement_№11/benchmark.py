@@ -59,7 +59,7 @@ async def make_request(
 
 
 async def main():
-    semaphore = asyncio.Semaphore(1)
+    semaphore = asyncio.Semaphore(10)
     async with httpx.AsyncClient() as client:
         token = await get_token(client)
         start_total = time.perf_counter()
