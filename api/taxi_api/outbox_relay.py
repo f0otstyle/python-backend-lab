@@ -43,42 +43,54 @@ async def outbox_relay():
                 published BOOLEAN NOT NULL DEFAULT FALSE
             )
         """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_outbox_published_created_at
+            ON outbox (created_at ASC)
+            WHERE published = FALSE
+                """)
 
     connection = await connect_rabbitmq()
     channel, exchange = await setup_channel(connection)
     try:
         while True:
             async with db_pool.acquire() as conn:
-                rows = await conn.fetch("""
-                    SELECT id, event_id, event_type, payload
-                    FROM outbox
-                    WHERE published = FALSE
-                    ORDER BY created_at ASC
-                    LIMIT 10
-                    """)
+                async with conn.transaction():
+                    rows = await conn.fetch("""
+                        SELECT id, event_id, event_type, payload
+                        FROM outbox
+                        WHERE published = FALSE
+                        ORDER BY created_at ASC
+                        LIMIT 10
+                        FOR UPDATE SKIP LOCKED
+                        """)
 
-                for row in rows:
-                    try:
-                        payload_dict = json.loads(row['payload']) if isinstance(row['payload'], str) else row['payload']
-                        event_id = row['event_id']
-                        await event_publish_json(
-                            exchange=exchange,
-                            routing_key=ROUTING_KEY,
-                            event_id=event_id,
-                            data=payload_dict
-                            )
+                    for row in rows:
+                        try:
+                            payload_dict = json.loads(row['payload']) if isinstance(row['payload'], str) else row['payload']
+                            event_id = row['event_id']
+                            await event_publish_json(
+                                exchange=exchange,
+                                routing_key=ROUTING_KEY,
+                                event_id=event_id,
+                                data=payload_dict
+                                )
 
-                        logger.info('Сообщение отправленно в RabbitMQ')
+                            logger.info('Сообщение отправленно в RabbitMQ')
 
-                        await conn.execute("""
-                            UPDATE outbox
-                            SET published = TRUE
-                            WHERE id = $1
-                        """, row['id'])
-                    except Exception as error:
-                        logger.error(f'Произошла ошибка {error} у записи {row['id']}')
+                            await conn.execute("""
+                                UPDATE outbox
+                                SET published = TRUE
+                                WHERE id = $1
+                            """, row['id'])
+                        except Exception as error:
+                            logger.error(f"Произошла ошибка {error} у записи {row['id']}")
 
-                await asyncio.sleep(1)
+                    await conn.execute("""
+                            DELETE FROM outbox
+                            WHERE published = TRUE
+                            """)
+
+            await asyncio.sleep(POLL_INTERVAL)
     finally:
         await db_pool.close()
         await connection.close()
