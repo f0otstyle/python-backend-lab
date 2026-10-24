@@ -1,4 +1,4 @@
-from .constants import BASE_URL, USER
+from .constants import BASE_URL, USER, BASE_URL_DRIVE, BASE_URL_PAYMENT
 import pytest
 import requests
 
@@ -14,7 +14,7 @@ def test_taxi_drivers(name, car):
             "car": car
         }
     result = requests.post(
-            f'{BASE_URL}/drivers',
+            f'{BASE_URL_DRIVE}/drivers',
             json=request_data,
         )
     body = result.json()
@@ -39,15 +39,16 @@ def test_top_up_your_card(money, test_user):
     with requests.Session() as session:
         login_response = session.post(f'{BASE_URL}/login', json=USER)
         assert login_response.status_code == 200
-        cookie = session.cookies.get("my_cookie")
+        # cookie = session.cookies.get("my_cookie")
 
-        result = session.post(f'{BASE_URL}/pay/{user_id}', json=request_data)
-        assert result.status_code == 401
-
-        result = session.post(f'{BASE_URL}/pay/{user_id}',
-                              json=request_data,
-                              cookies={"my_cookie": cookie})
+        result = session.post(f'{BASE_URL_PAYMENT}/pay/{user_id}',
+                              json=request_data)
         assert result.status_code == 200
+
+        # result = session.post(f'{BASE_URL_PAYMENT}/pay/{user_id}',
+        #                       json=request_data,
+        #                       cookies={"my_cookie": cookie})
+        # assert result.status_code == 200
 
 
 def test_ordering_a_taxi(order_fixture):

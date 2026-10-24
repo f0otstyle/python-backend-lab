@@ -32,22 +32,6 @@ async def outbox_relay():
         min_size=1,
         max_size=10
     )
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS outbox (
-                id SERIAL PRIMARY KEY,
-                event_id VARCHAR NOT NULL,
-                event_type VARCHAR,
-                payload JSONB NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                published BOOLEAN NOT NULL DEFAULT FALSE
-            )
-        """)
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_outbox_published_created_at
-            ON outbox (created_at ASC)
-            WHERE published = FALSE
-                """)
 
     connection = await connect_rabbitmq()
     channel, exchange = await setup_channel(connection)
@@ -58,7 +42,8 @@ async def outbox_relay():
                     rows = await conn.fetch("""
                         SELECT id, event_id, event_type, payload
                         FROM outbox
-                        WHERE published = FALSE
+                        WHERE published = FALSE AND
+                        event_type = 'order.created'
                         ORDER BY created_at ASC
                         LIMIT 10
                         FOR UPDATE SKIP LOCKED
@@ -87,7 +72,8 @@ async def outbox_relay():
 
                     await conn.execute("""
                             DELETE FROM outbox
-                            WHERE published = TRUE
+                            WHERE published = TRUE AND
+                            event_type = 'order.created'
                             """)
 
             await asyncio.sleep(POLL_INTERVAL)
