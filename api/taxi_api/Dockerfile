@@ -15,6 +15,7 @@ COPY denylist.py .
 COPY deps.py .
 COPY rabbitmq.py .
 COPY outbox_relay.py .
+COPY blaclist.py .
 
 
 CMD ["uvicorn", "taxi_api:app", "--host", "0.0.0.0", "--port", "8000"]

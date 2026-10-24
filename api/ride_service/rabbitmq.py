@@ -12,9 +12,9 @@ import aio_pika
 RABBITMQ_HOST = os.getenv('RABBITMQ_HOST', 'localhost')
 RABBITMQ_URL = f"amqp://guest:guest@{RABBITMQ_HOST}:5672/"
 
-EXCHANGE_NAME = "taxi_rides_exchange"
-QUEUE_NAME = "taxi_rides_queue"
-ROUTING_KEY = "ride.create"
+EXCHANGE_NAME = "taxi_events"
+QUEUE_NAME = "rides_queue"
+ROUTING_KEY = "driver.assigned"
 
 DLX_EXCHANGE = "taxi_rides.dlx"
 DLQ_QUEUE = "taxi_rides_dlq"
@@ -93,11 +93,13 @@ async def declare_retry_queue(
 async def event_publish_json(
         exchange: AbstractExchange,
         routing_key: str,
+        event_id: str,
         data: dict,
         ):
     message = aio_pika.Message(
         json.dumps(data).encode(),
-        delivery_mode=aio_pika.DeliveryMode.PERSISTENT
+        delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+        headers={'event_id': event_id}
         )
     await exchange.publish(
         message,
