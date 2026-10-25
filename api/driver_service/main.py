@@ -146,8 +146,7 @@ async def handler_driver(message: AbstractIncomingMessage):
 
             death_count = len(message.headers.get("x-death", []))
             if death_count >= MAX_RETRIES:
-                logger.warning(f"Заказ {order_id} отправлен в DLQ после {death_count} попыток.")
-                await message.nack(requeue=False)
+                await message.ack()
                 return
 
             async with db_pool.acquire() as conn:
@@ -156,7 +155,6 @@ async def handler_driver(message: AbstractIncomingMessage):
                         await conn.execute('''
                             INSERT INTO processed_events (event_id)
                             VALUES ($1)
-                            ON CONFLICT DO NOTHING
                         ''', event_id)
                     except asyncpg.exceptions.UniqueViolationError:
                         logger.info(f'Дубликат: событие {event_id} уже обработано')

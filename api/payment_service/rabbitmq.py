@@ -17,8 +17,6 @@ QUEUE_NAME = "payment_queue"
 ROUTING_KEY = "ride.finished"
 
 DLX_EXCHANGE = "taxi_payment.dlx"
-DLQ_QUEUE = "taxi_payment_dlq"
-DLQ_ROUTING_KEY = "payment.dead_letter"
 
 RETRY_QUEUE = "taxi_payment_retry_queue"
 RETRY_ROUTING_KEY = "payment.retry"
@@ -52,7 +50,7 @@ async def declare_queue(
         durable=True,
         arguments={
             "x-dead-letter-exchange": DLX_EXCHANGE,
-            "x-dead-letter-routing-key": DLQ_ROUTING_KEY,
+            "x-dead-letter-routing-key": RETRY_ROUTING_KEY,
             "x-message-ttl": 60000,
             "x-max-length": 1000,
             "x-consumer-timeout": 3000,
@@ -62,22 +60,11 @@ async def declare_queue(
     return queue
 
 
-async def declare_dlx_queue(
-        channel: AbstractChannel,
-        exchange: AbstractExchange
-         ):
-    queue_dlx: AbstractQueue = await channel.declare_queue(
-        name=DLQ_QUEUE,
-        durable=True
-    )
-    await queue_dlx.bind(exchange=exchange, routing_key=DLQ_ROUTING_KEY)
-    return queue_dlx
-
-
 async def declare_retry_queue(
         channel: AbstractChannel,
+        dlx_exchange: AbstractExchange
          ):
-    queue = await channel.declare_queue(
+    queue_retry = await channel.declare_queue(
         RETRY_QUEUE,
         durable=True,
         arguments={
@@ -86,7 +73,11 @@ async def declare_retry_queue(
             "x-dead-letter-routing-key": ROUTING_KEY,
         },
     )
-    return queue
+    await queue_retry.bind(
+        exchange=dlx_exchange,
+        routing_key=RETRY_ROUTING_KEY
+        )
+    return queue_retry
 
 
 async def event_publish_json(

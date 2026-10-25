@@ -32,7 +32,17 @@ async def outbox_relay():
         min_size=1,
         max_size=10
     )
-
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS outbox (
+            id SERIAL PRIMARY KEY,
+            event_id VARCHAR NOT NULL,
+            event_type VARCHAR,
+            payload JSONB NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            published BOOLEAN NOT NULL DEFAULT FALSE
+        )
+        """)
     connection = await connect_rabbitmq()
     channel, exchange = await setup_channel(connection)
     try:

@@ -133,8 +133,7 @@ async def handler_order(message: AbstractIncomingMessage):
 
             death_count = len(message.headers.get("x-death", []))
             if death_count >= MAX_RETRIES:
-                logger.warning(f"Заказ {order_id} отправлен в DLQ после {death_count} попыток.")
-                await message.nack(requeue=False)
+                await message.ack()
                 return
 
             async with db_pool.acquire() as conn:
@@ -143,38 +142,36 @@ async def handler_order(message: AbstractIncomingMessage):
                         await conn.execute('''
                             INSERT INTO processed_events (event_id)
                             VALUES ($1)
-                            ON CONFLICT DO NOTHING
                         ''', event_id)
+                        result = await taxi_ride(conn=conn, order_id=order_id)
+                        if not result:
+                            logger.warning(
+                                'Заказ не закончен'
+                                )
+                            await message.ack()
+                            return
                     except asyncpg.exceptions.UniqueViolationError:
                         logger.info(f'Дубликат: событие {event_id} уже обработано')
                         await message.ack()
                         return
 
-                drive = await taxi_ride(order_id=order_id)
-                if not drive:
-                    logger.warning(
-                        'Заказ не закончен'
-                        )
-                    await message.nack(requeue=True)
-                    return
-
             logger.info(f'Заказ закончен для ID {order_id}')
         except Exception as e:
             print(f"Ошибка обработки сообщения: {e}")
-            await message.nack(requeue=True)
+            await message.nack(requeue=False)
 
 @log
 async def taxi_ride(
+    conn,
     order_id: int,
         ):
     '''Симуляция поездки'''
-    async with db_pool.acquire() as conn:
-        order = await conn.fetchrow('''
-            SELECT * FROM order_taxi WHERE id=$1
-        ''', order_id)
-        if not order:
-            logger.warning(f'Заказ {order_id} не найден или нет водителя')
-            return None
+    order = await conn.fetchrow('''
+        SELECT * FROM order_taxi WHERE id=$1
+    ''', order_id)
+    if not order:
+        logger.warning(f'Заказ {order_id} не найден или нет водителя')
+        return None
 
     logger.info(f'Поездка по заказу {order_id} началась')
 
@@ -183,28 +180,27 @@ async def taxi_ride(
     await asyncio.sleep(duration)
     end_time = datetime.now(timezone.utc)
 
-    async with db_pool.acquire() as conn:
-        ride = await conn.fetchrow('''
-            INSERT INTO rides (order_id, driver_id, user_id, started_at, finished_at)
-            VALUES ($1, $2, $3, $4, $5)
-            RETURNING id, order_id, driver_id, duration
-        ''', order_id, order['driver_id'], order['user_id'], start_time, end_time)
+    ride = await conn.fetchrow('''
+         INSERT INTO rides (order_id, driver_id, user_id, started_at, finished_at)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, order_id, driver_id, duration
+    ''', order_id, order['driver_id'], order['user_id'], start_time, end_time)
 
-        logger.info(f'Поездка по заказу {order_id} завершена за {duration} сек')
+    logger.info(f'Поездка по заказу {order_id} завершена за {duration} сек')
 
-        payload_json = json.dumps({
-            'id': order['id'],
-            'user_id': order['user_id'],
-            'price': float(order['price']),
-            'driver_id': order['driver_id']
-        })
+    payload_json = json.dumps({
+        'id': order['id'],
+        'user_id': order['user_id'],
+        'price': float(order['price']),
+        'driver_id': order['driver_id']
+    })
 
-        event_id = str(uuid4())
+    event_id = str(uuid4())
 
-        await conn.fetchrow('''
-            INSERT INTO outbox (
-            event_id, event_type, payload, published)
-            VALUES ($1, $2, $3, $4)
-        ''', event_id, 'ride.finished', payload_json, False)
+    await conn.fetchrow('''
+        INSERT INTO outbox (
+        event_id, event_type, payload, published)
+        VALUES ($1, $2, $3, $4)
+    ''', event_id, 'ride.finished', payload_json, False)
 
-        return dict(ride)
+    return dict(ride)

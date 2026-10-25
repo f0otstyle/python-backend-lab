@@ -12,7 +12,6 @@ from aio_pika.abc import AbstractIncomingMessage
 from rabbitmq import (MAX_RETRIES,
                       connect_rabbitmq,
                       declare_dlx_exchange,
-                      declare_dlx_queue,
                       setup_channel,
                       declare_queue,
                       declare_retry_queue
@@ -65,9 +64,8 @@ async def lifespan(app: FastAPI):
     app.state.exchange = exchange
     app.state.connection = connection
 
-    await declare_dlx_exchange(channel)
-    await declare_dlx_queue(channel, exchange)
-    await declare_retry_queue(channel)
+    dlx_exchange = await declare_dlx_exchange(channel)
+    await declare_retry_queue(channel, dlx_exchange)
     queue = await declare_queue(channel, exchange)
 
     app.state.exchange = exchange
@@ -84,6 +82,7 @@ async def lifespan(app: FastAPI):
     if app.state.inflight:
         await asyncio.gather(*app.state.inflight, return_exceptions=True)
 
+    await app.state.redis.aclose()
     await connection.close()
     await db_pool.close()
 
@@ -160,13 +159,12 @@ async def handler_payment(message: AbstractIncomingMessage):
 
             if not event_id or not order_id:
                 logger.error("В сообщении нет event_id или id заказа")
-                await message.nack(requeue=False)
+                await message.ack()
                 return
 
             death_count = len(message.headers.get("x-death", []))
             if death_count >= MAX_RETRIES:
-                logger.warning(f"Заказ {order_id} отправлен в DLQ после {death_count} попыток.")
-                await message.nack(requeue=False)
+                await message.ack()
                 return
 
             async with db_pool.acquire() as conn:
@@ -175,7 +173,6 @@ async def handler_payment(message: AbstractIncomingMessage):
                         await conn.execute('''
                             INSERT INTO processed_events (event_id)
                             VALUES ($1)
-                            ON CONFLICT DO NOTHING
                         ''', event_id)
                     except asyncpg.exceptions.UniqueViolationError:
                         logger.info(f'Дубликат: событие {event_id} уже обработано')
@@ -185,14 +182,16 @@ async def handler_payment(message: AbstractIncomingMessage):
                     if not payment_order:
                         logger.warning('Недостаточно средств на карте')
                         logger.error(f'Поездка по заказу {order_id} не оплачена')
+                        await message.ack()
                         return
 
                     logger.info(
                                 'Поездка успешна оплачена'
                                     )
+            await message.ack()
         except Exception as e:
             print(f"Ошибка обработки сообщения: {e}")
-            await message.nack(requeue=True)
+            await message.nack(requeue=False)
 
 
 @log
@@ -214,7 +213,7 @@ async def pay_to_taxi(
 
     if not card:
         logger.warning(f'У пользователя {order["user_id"]} нет карты')
-        logger.info(f'Пользователь {order['user_id']} добавлен в черный список')
+        logger.info(f"Пользователь {order['user_id']} добавлен в черный список")
         await app.state.blaclist.set_user_blaclist(order['user_id'])
         return False
 
