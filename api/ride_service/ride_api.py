@@ -12,7 +12,6 @@ from aio_pika.abc import AbstractIncomingMessage
 from rabbitmq import (MAX_RETRIES,
                       connect_rabbitmq,
                       declare_dlx_exchange,
-                      declare_dlx_queue,
                       setup_channel,
                       declare_queue,
                       declare_retry_queue
@@ -81,9 +80,8 @@ async def lifespan(app: FastAPI):
     app.state.exchange = exchange
     app.state.connection = connection
 
-    await declare_dlx_exchange(channel)
-    await declare_dlx_queue(channel, exchange)
-    await declare_retry_queue(channel)
+    dlx_exchange = await declare_dlx_exchange(channel)
+    await declare_retry_queue(channel, dlx_exchange)
     queue = await declare_queue(channel, exchange)
 
     app.state.exchange = exchange
@@ -131,7 +129,7 @@ async def handler_order(message: AbstractIncomingMessage):
                 await message.nack(requeue=False)
                 return
 
-            death_count = len(message.headers.get("x-death", []))
+            death_count = message.headers["x-death"][0]['count']
             if death_count >= MAX_RETRIES:
                 await message.ack()
                 return
@@ -166,6 +164,7 @@ async def taxi_ride(
     order_id: int,
         ):
     '''Симуляция поездки'''
+    raise RuntimeError("test")
     order = await conn.fetchrow('''
         SELECT * FROM order_taxi WHERE id=$1
     ''', order_id)

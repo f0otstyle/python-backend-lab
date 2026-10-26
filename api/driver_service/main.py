@@ -12,7 +12,6 @@ from redis.asyncio import Redis
 from rabbitmq import (MAX_RETRIES,
                       connect_rabbitmq,
                       declare_dlx_exchange,
-                      declare_dlx_queue,
                       setup_channel,
                       declare_queue,
                       declare_retry_queue
@@ -65,9 +64,8 @@ async def lifespan(app: FastAPI):
     app.state.exchange = exchange
     app.state.connection = connection
 
-    await declare_dlx_exchange(channel)
-    await declare_dlx_queue(channel, exchange)
-    await declare_retry_queue(channel)
+    dlx_exchange = await declare_dlx_exchange(channel)
+    await declare_retry_queue(channel, dlx_exchange)
     queue = await declare_queue(channel, exchange)
 
     app.state.exchange = exchange
@@ -144,7 +142,7 @@ async def handler_driver(message: AbstractIncomingMessage):
                 await message.nack(requeue=False)
                 return
 
-            death_count = len(message.headers.get("x-death", []))
+            death_count = message.headers["x-death"][0]['count']
             if death_count >= MAX_RETRIES:
                 await message.ack()
                 return
@@ -156,25 +154,26 @@ async def handler_driver(message: AbstractIncomingMessage):
                             INSERT INTO processed_events (event_id)
                             VALUES ($1)
                         ''', event_id)
+                        appoint = await taxi_to_appoint(
+                            conn=conn,
+                            order_id=order_id
+                            )
+                        if not appoint:
+                            logger.info(
+                                f'Водитель не назначен по заказу {order_id}'
+                            )
+                            raise RuntimeError("Пока нету водителей")
+
+                        logger.info(
+                                    'Водитель для поездки назначен'
+                                        )
                     except asyncpg.exceptions.UniqueViolationError:
                         logger.info(f'Дубликат: событие {event_id} уже обработано')
                         await message.ack()
                         return
-
-                    appoint = await taxi_to_appoint(conn=conn, order_id=order_id)
-                    if not appoint:
-                        logger.info(
-                            f'Водитель не назначен по заказу {order_id}'
-                        )
-                        await message.nack(requeue=True)
-                        return
-
-                    logger.info(
-                                'Водитель для поездки назначен'
-                                    )
         except Exception as e:
             print(f"Ошибка обработки сообщения: {e}")
-            await message.nack(requeue=True)
+            await message.nack(requeue=False)
 
 
 @log
@@ -208,7 +207,7 @@ async def taxi_to_appoint(
     result = await conn.fetchrow('''
         UPDATE order_taxi
         SET driver_id = $1
-        WHERE id = $2
+        WHERE id = $2 AND driver_id IS NULL
         RETURNING id, from_address, to_address, driver_id, user_id, price, idempotency_key
         ''', driver["id"], order_id)
 

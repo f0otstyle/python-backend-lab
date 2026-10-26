@@ -162,7 +162,7 @@ async def handler_payment(message: AbstractIncomingMessage):
                 await message.ack()
                 return
 
-            death_count = len(message.headers.get("x-death", []))
+            death_count = message.headers["x-death"][0]['count']
             if death_count >= MAX_RETRIES:
                 await message.ack()
                 return
@@ -174,14 +174,17 @@ async def handler_payment(message: AbstractIncomingMessage):
                             INSERT INTO processed_events (event_id)
                             VALUES ($1)
                         ''', event_id)
+                        payment_order = await pay_to_taxi(
+                            conn=conn,
+                            order_id=order_id
+                            )
+                        if not payment_order:
+                            logger.warning('Недостаточно средств на карте')
+                            logger.error(f'Поездка по заказу {order_id} не оплачена')
+                            await message.ack()
+                            return
                     except asyncpg.exceptions.UniqueViolationError:
                         logger.info(f'Дубликат: событие {event_id} уже обработано')
-                        await message.ack()
-                        return
-                    payment_order = await pay_to_taxi(conn=conn, order_id=order_id)
-                    if not payment_order:
-                        logger.warning('Недостаточно средств на карте')
-                        logger.error(f'Поездка по заказу {order_id} не оплачена')
                         await message.ack()
                         return
 

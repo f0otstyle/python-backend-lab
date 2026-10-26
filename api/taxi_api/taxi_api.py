@@ -315,7 +315,7 @@ async def ordering_a_taxi(
     pool: asyncpg.Pool = Depends(get_pool),
     token_data: TokenPayload = Depends(security.access_token_required),
     cache: RedisCachedBackend = Depends(get_cache),
-    balclist: BlacklistRedis = Depends(blaclist)
+    blaclist: BlacklistRedis = Depends(blaclist)
         ):
     '''Создаем заказ'''
     user_id = int(token_data.sub)
@@ -331,7 +331,7 @@ async def ordering_a_taxi(
     end
     """
 
-    if await balclist.get_user_blaclist(user_id):
+    if await blaclist.get_user_blaclist(user_id):
         raise HTTPException(
             status_code=403,
             detail="У вас есть задолженность. Пополните баланс перед заказом."
