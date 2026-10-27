@@ -85,6 +85,16 @@ async def init_db():
         )
         """)
         await conn.execute("""
+            CREATE TABLE IF NOT EXISTS payments (
+            id SERIAL PRIMARY KEY,
+            order_id INTEGER NOT NULL UNIQUE REFERENCES order_taxi(id),
+            user_id INTEGER NOT NULL,
+            amount NUMERIC NOT NULL,
+            event_id VARCHAR NOT NULL,
+            paid_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        """) 
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS outbox (
                 id SERIAL PRIMARY KEY,
                 event_id VARCHAR NOT NULL,

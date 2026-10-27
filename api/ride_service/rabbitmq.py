@@ -80,6 +80,18 @@ async def declare_retry_queue(
     return queue
 
 
+async def declare_dlq_queue(
+    channel: AbstractChannel,
+    dlx_exchange: AbstractExchange
+):
+    dlq_queue = await channel.declare_queue(
+        DLQ_QUEUE,
+        durable=True
+    )
+    await dlq_queue.bind(exchange=dlx_exchange, routing_key=DLQ_ROUTING_KEY)
+    return dlq_queue
+
+
 async def event_publish_json(
         exchange: AbstractExchange,
         routing_key: str,

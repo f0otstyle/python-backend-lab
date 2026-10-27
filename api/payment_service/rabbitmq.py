@@ -17,6 +17,8 @@ QUEUE_NAME = "payment_queue"
 ROUTING_KEY = "ride.finished"
 
 DLX_EXCHANGE = "taxi_payment.dlx"
+DLQ_QUEUE = "taxi_payment_dlq"
+DLQ_ROUTING_KEY = "taxi_payment.dlq"
 
 RETRY_QUEUE = "taxi_payment_retry_queue"
 RETRY_ROUTING_KEY = "payment.retry"
@@ -78,6 +80,21 @@ async def declare_retry_queue(
         routing_key=RETRY_ROUTING_KEY
         )
     return queue_retry
+
+
+async def declare_dlq_queue(
+        channel: AbstractChannel,
+        dlx_exchange: AbstractExchange
+        ):
+    queue_dlq = await channel.declare_queue(
+        DLQ_QUEUE,
+        durable=True
+    )
+    await queue_dlq.bind(
+        exchange=dlx_exchange,
+        routing_key=DLQ_ROUTING_KEY
+    )
+    return queue_dlq
 
 
 async def event_publish_json(

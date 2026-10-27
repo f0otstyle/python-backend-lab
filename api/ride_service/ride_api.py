@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timezone
 import json
+import aio_pika
 from uuid import uuid4
 from redis.asyncio import Redis
 from fastapi import FastAPI
@@ -10,9 +11,11 @@ from logging_log import logger, log
 import asyncpg
 from aio_pika.abc import AbstractIncomingMessage
 from rabbitmq import (MAX_RETRIES,
+                      DLQ_ROUTING_KEY,
                       connect_rabbitmq,
                       declare_dlx_exchange,
                       setup_channel,
+                      declare_dlq_queue,
                       declare_queue,
                       declare_retry_queue
                       )
@@ -82,9 +85,11 @@ async def lifespan(app: FastAPI):
 
     dlx_exchange = await declare_dlx_exchange(channel)
     await declare_retry_queue(channel, dlx_exchange)
+    await declare_dlq_queue(channel, dlx_exchange)
     queue = await declare_queue(channel, exchange)
 
     app.state.exchange = exchange
+    app.state.dlx_exchange = dlx_exchange
     app.state.connection = connection
     app.state.db = db_pool
 
@@ -129,8 +134,23 @@ async def handler_order(message: AbstractIncomingMessage):
                 await message.nack(requeue=False)
                 return
 
-            death_count = message.headers["x-death"][0]['count']
+            death_count = 0
+            x_death = message.headers.get("x-death")
+            if x_death:
+                death_count = message.headers["x-death"][0]['count']
             if death_count >= MAX_RETRIES:
+                await app.state.dlx_exchange.publish(
+                    aio_pika.Message(
+                        body=message.body,
+                        delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                        headers={
+                            **message.headers,
+                            'event_id': event_id,
+                            'order_id': order_id,
+                        }
+                    ),
+                    routing_key=DLQ_ROUTING_KEY,
+                )
                 await message.ack()
                 return
 
@@ -164,7 +184,6 @@ async def taxi_ride(
     order_id: int,
         ):
     '''Симуляция поездки'''
-    raise RuntimeError("test")
     order = await conn.fetchrow('''
         SELECT * FROM order_taxi WHERE id=$1
     ''', order_id)

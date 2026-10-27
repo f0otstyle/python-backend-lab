@@ -142,7 +142,10 @@ async def handler_driver(message: AbstractIncomingMessage):
                 await message.nack(requeue=False)
                 return
 
-            death_count = message.headers["x-death"][0]['count']
+            death_count = 0
+            x_death = message.headers.get("x-death")
+            if x_death:
+                death_count = message.headers["x-death"][0]['count']
             if death_count >= MAX_RETRIES:
                 await message.ack()
                 return

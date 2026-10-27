@@ -1,6 +1,8 @@
 import asyncio
 from http import HTTPStatus
 import json
+import aio_pika
+from authx import TokenPayload
 from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
@@ -10,6 +12,8 @@ from logging_log import logger, log
 import asyncpg
 from aio_pika.abc import AbstractIncomingMessage
 from rabbitmq import (MAX_RETRIES,
+                      DLQ_ROUTING_KEY,
+                      declare_dlq_queue,
                       connect_rabbitmq,
                       declare_dlx_exchange,
                       setup_channel,
@@ -17,6 +21,7 @@ from rabbitmq import (MAX_RETRIES,
                       declare_retry_queue
                       )
 import os
+from security import security
 
 
 DB_HOST = os.getenv('DB_HOST', 'localhost')
@@ -65,9 +70,12 @@ async def lifespan(app: FastAPI):
     app.state.connection = connection
 
     dlx_exchange = await declare_dlx_exchange(channel)
+    await declare_dlq_queue(channel, dlx_exchange)
     await declare_retry_queue(channel, dlx_exchange)
     queue = await declare_queue(channel, exchange)
 
+    app.state.dlx_exchange = dlx_exchange
+    app.state.declare_dlq_queue = declare_dlq_queue
     app.state.exchange = exchange
     app.state.connection = connection
     app.state.db = db_pool
@@ -102,13 +110,15 @@ async def blaclist(request: Request):
 
 
 @app.post('/pay/{user_id}',
-          status_code=HTTPStatus.OK)
+          status_code=HTTPStatus.OK,
+          dependencies=[Depends(security.access_token_required)])
 async def top_up_your_card(
     payload: MoneySchema,
-    user_id: int,
     pool: asyncpg.Pool = Depends(get_pool),
-    blacklist: BlacklistRedis = Depends(blaclist)
+    blacklist: BlacklistRedis = Depends(blaclist),
+    token_data: TokenPayload = Depends(security.access_token_required),
         ):
+    user_id = int(token_data.sub)
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -144,6 +154,23 @@ async def top_up_your_card(
 
 async def handler_payment(message: AbstractIncomingMessage):
     async with message.process(ignore_processed=True):
+        death_count = 0
+
+        x_death = message.headers.get("x-death")
+        if x_death:
+            death_count = message.headers["x-death"][0]['count']
+
+        if death_count >= MAX_RETRIES:
+            await app.state.dlx_exchange.publish(
+                aio_pika.Message(
+                    body=message.body,
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                    headers=dict(message.headers)
+                    ),
+                routing_key=DLQ_ROUTING_KEY,
+            )
+            await message.ack()
+            return
         try:
             body_str = message.body.decode()
             event_data = json.loads(body_str)
@@ -158,14 +185,7 @@ async def handler_payment(message: AbstractIncomingMessage):
             logger.info(f"event_id: {event_id}, order_id: {order_id}")
 
             if not event_id or not order_id:
-                logger.error("В сообщении нет event_id или id заказа")
-                await message.ack()
-                return
-
-            death_count = message.headers["x-death"][0]['count']
-            if death_count >= MAX_RETRIES:
-                await message.ack()
-                return
+                raise ValueError("Отсутствуют обязательные поля")
 
             async with db_pool.acquire() as conn:
                 async with conn.transaction():
@@ -176,13 +196,21 @@ async def handler_payment(message: AbstractIncomingMessage):
                         ''', event_id)
                         payment_order = await pay_to_taxi(
                             conn=conn,
+                            event_id=event_id,
                             order_id=order_id
                             )
+
                         if not payment_order:
                             logger.warning('Недостаточно средств на карте')
                             logger.error(f'Поездка по заказу {order_id} не оплачена')
                             await message.ack()
                             return
+
+                        if payment_order == 'ready':
+                            logger.error(f'Заказ {order_id} уже оплачен')
+                            await message.ack()
+                            return
+
                     except asyncpg.exceptions.UniqueViolationError:
                         logger.info(f'Дубликат: событие {event_id} уже обработано')
                         await message.ack()
@@ -200,6 +228,7 @@ async def handler_payment(message: AbstractIncomingMessage):
 @log
 async def pay_to_taxi(
     conn,
+    event_id: str,
     order_id: int,
         ):
     '''Оплата поездки'''
@@ -209,6 +238,13 @@ async def pay_to_taxi(
     if not order:
         logger.warning(f'Заказ {order_id} не найден или нет водителя')
         return None
+
+    existing_payment = await conn.fetchrow('''
+        SELECT * FROM payments WHERE order_id=$1
+    ''', order_id)
+    if existing_payment:
+        logger.info(f'Заказ {order_id} уже оплачен!')
+        return 'ready'
 
     card = await conn.fetchrow('''
         SELECT balance FROM taxi_card WHERE user_id = $1 FOR UPDATE
@@ -237,6 +273,11 @@ async def pay_to_taxi(
         SET money = money + $1
         WHERE id = $2
         ''', order['price'], order['driver_id'])
+
+    await conn.execute('''
+        INSERT INTO payments (order_id, user_id, amount, event_id)
+        VALUES ($1, $2, $3, $4)
+    ''', order_id, order['user_id'], order['price'], event_id)
 
     await app.state.blaclist.delete_user_blaclist(order['user_id'])
     logger.info(f'Списано {order["price"]} с карты пользователя {order["user_id"]}')
