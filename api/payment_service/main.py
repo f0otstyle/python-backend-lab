@@ -109,7 +109,7 @@ async def blaclist(request: Request):
     return request.app.state.blaclist
 
 
-@app.post('/pay/{user_id}',
+@app.post('/pay',
           status_code=HTTPStatus.OK,
           dependencies=[Depends(security.access_token_required)])
 async def top_up_your_card(
@@ -216,12 +216,12 @@ async def handler_payment(message: AbstractIncomingMessage):
                         await message.ack()
                         return
 
-                    logger.info(
-                                'Поездка успешна оплачена'
-                                    )
+                logger.info(
+                            'Поездка успешна оплачена'
+                                )
             await message.ack()
         except Exception as e:
-            print(f"Ошибка обработки сообщения: {e}")
+            logger.error(f"Критическая ошибка обработки сообщения: {e}", exc_info=True)
             await message.nack(requeue=False)
 
 
@@ -263,7 +263,7 @@ async def pay_to_taxi(
         return False
 
     await conn.execute('''
-         UPDATE taxi_card
+        UPDATE taxi_card
         SET balance = balance - $1
         WHERE user_id = $2
     ''', order['price'], order['user_id'])

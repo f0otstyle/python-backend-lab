@@ -17,6 +17,8 @@ QUEUE_NAME = "drivers_queue"
 ROUTING_KEY = "order.create"
 
 DLX_EXCHANGE = "taxi_driver.dlx"
+DLQ_QUEUE = "taxi_driver.dlq"
+DLQ_ROUTING_KEY = "taxi_driver_dlq"
 
 RETRY_QUEUE = "taxi_driver_retry_queue"
 RETRY_ROUTING_KEY = "driver.retry"
@@ -58,6 +60,18 @@ async def declare_queue(
         )
     await queue.bind(exchange=exchange, routing_key=ROUTING_KEY)
     return queue
+
+
+async def declare_dlq_queue(
+        channel: AbstractChannel,
+        dlq_exchange: AbstractExchange
+):
+    dlq_queue = await channel.declare_queue(
+        DLQ_QUEUE,
+        durable=True
+    )
+    await dlq_queue.bind(exchange=dlq_exchange, routing_key=DLQ_ROUTING_KEY)
+    return dlq_queue
 
 
 async def declare_retry_queue(

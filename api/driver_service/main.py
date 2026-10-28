@@ -7,9 +7,11 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from contextlib import asynccontextmanager
 import asyncpg
 import os
-
+import aio_pika
 from redis.asyncio import Redis
 from rabbitmq import (MAX_RETRIES,
+                      DLQ_ROUTING_KEY,
+                      declare_dlq_queue,
                       connect_rabbitmq,
                       declare_dlx_exchange,
                       setup_channel,
@@ -65,9 +67,11 @@ async def lifespan(app: FastAPI):
     app.state.connection = connection
 
     dlx_exchange = await declare_dlx_exchange(channel)
+    await declare_dlq_queue(channel, dlx_exchange)
     await declare_retry_queue(channel, dlx_exchange)
     queue = await declare_queue(channel, exchange)
 
+    app.state.dlx_exchange = dlx_exchange
     app.state.exchange = exchange
     app.state.connection = connection
     app.state.db = db_pool
@@ -124,6 +128,24 @@ async def create_driver(
 
 async def handler_driver(message: AbstractIncomingMessage):
     async with message.process(ignore_processed=True):
+        death_count = 0
+
+        x_death = message.headers.get("x-death")
+        if x_death:
+            death_count = message.headers["x-death"][0]['count']
+
+        if death_count >= MAX_RETRIES:
+            await app.state.dlx_exchange.publish(
+                aio_pika.Message(
+                    body=message.body,
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                    headers=dict(message.headers)
+                ),
+                routing_key=DLQ_ROUTING_KEY
+            )
+
+            await message.ack()
+            return
         try:
             body_str = message.body.decode()
             event_data = json.loads(body_str)
@@ -140,14 +162,6 @@ async def handler_driver(message: AbstractIncomingMessage):
             if not event_id or not order_id:
                 logger.error("В сообщении нет event_id или id заказа")
                 await message.nack(requeue=False)
-                return
-
-            death_count = 0
-            x_death = message.headers.get("x-death")
-            if x_death:
-                death_count = message.headers["x-death"][0]['count']
-            if death_count >= MAX_RETRIES:
-                await message.ack()
                 return
 
             async with db_pool.acquire() as conn:

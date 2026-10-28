@@ -116,6 +116,24 @@ class MoneySchema(BaseModel):
 
 async def handler_order(message: AbstractIncomingMessage):
     async with message.process(ignore_processed=True):
+        death_count = 0
+
+        x_death = message.headers.get("x-death")
+        if x_death:
+            death_count = message.headers["x-death"][0]['count']
+
+        if death_count >= MAX_RETRIES:
+            await app.state.dlx_exchange.publish(
+                aio_pika.Message(
+                    body=message.body,
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                    headers=dict(message.headers)
+                ),
+                routing_key=DLQ_ROUTING_KEY,
+            )
+            await message.ack()
+            return
+
         try:
             body_str = message.body.decode()
             event_data = json.loads(body_str)
@@ -132,26 +150,6 @@ async def handler_order(message: AbstractIncomingMessage):
             if not event_id or not order_id:
                 logger.error("В сообщении нет event_id или id заказа")
                 await message.nack(requeue=False)
-                return
-
-            death_count = 0
-            x_death = message.headers.get("x-death")
-            if x_death:
-                death_count = message.headers["x-death"][0]['count']
-            if death_count >= MAX_RETRIES:
-                await app.state.dlx_exchange.publish(
-                    aio_pika.Message(
-                        body=message.body,
-                        delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-                        headers={
-                            **message.headers,
-                            'event_id': event_id,
-                            'order_id': order_id,
-                        }
-                    ),
-                    routing_key=DLQ_ROUTING_KEY,
-                )
-                await message.ack()
                 return
 
             async with db_pool.acquire() as conn:
