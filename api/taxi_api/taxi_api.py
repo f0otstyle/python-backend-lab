@@ -1,5 +1,6 @@
 from decimal import Decimal
 import json
+import time
 from uuid import uuid4
 from fastapi import (FastAPI,
                      HTTPException,
@@ -13,6 +14,7 @@ from http import HTTPStatus
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials
+from prometheus_client import make_asgi_app
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from denylist import Denylist, ensure_not_revoked
@@ -22,12 +24,14 @@ from logging_log import logger, log
 from authx import TokenPayload
 from redis_cache import RedisCachedBackend
 from redis_rate_limiter import Ratelimit
+from blaclist import BlacklistRedis
 import asyncio
 import asyncpg
 import bcrypt
 import os
 from deps import security, get_cache, config
 from typing import cast
+from metrics import ORDER_CREATE_TOTAL, ORDER_FAILED_TOTAL, ORDER_DURATION
 
 
 DB_HOST = os.getenv('DB_HOST', 'localhost')
@@ -35,6 +39,8 @@ DB_PORT = int(os.getenv('DB_PORT', 5432))
 DB_USER = os.getenv('POSTGRES_USER', 'pgAdmin')
 DB_PASSWORD = os.getenv('POSTGRES_PASSWORD', 'postgres')
 DB_NAME = os.getenv('POSTGRES_DB', 'taxi_db')
+REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
+REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
 
 TIME = 5
 
@@ -81,6 +87,37 @@ async def init_db():
             UNIQUE (user_id, idempotency_key)
         )
         """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS payments (
+            id SERIAL PRIMARY KEY,
+            order_id INTEGER NOT NULL UNIQUE REFERENCES order_taxi(id),
+            user_id INTEGER NOT NULL,
+            amount NUMERIC NOT NULL,
+            event_id VARCHAR NOT NULL,
+            paid_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS outbox (
+                id SERIAL PRIMARY KEY,
+                event_id VARCHAR NOT NULL,
+                event_type VARCHAR,
+                payload JSONB NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                published BOOLEAN NOT NULL DEFAULT FALSE
+            )
+            """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_outbox_published_created_at
+            ON outbox (created_at ASC)
+            WHERE published = FALSE
+            """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS processed_events (
+            event_id UUID PRIMARY KEY,
+            processed_at timestamptz DEFAULT NOW()
+            )
+        """)
     return db_pool
 
 
@@ -88,8 +125,11 @@ async def init_db():
 async def lifespan(app: FastAPI):
     db = await init_db()
 
+    app.state.redis = Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
     app.state.redis_cache = RedisCachedBackend(cache_ttl_seconds=60)
     app.state.redis_rate_limiter = Ratelimit()
+
+    app.state.blaclist = BlacklistRedis(redis=app.state.redis)
 
     app.state.denylist = Denylist()
 
@@ -101,6 +141,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
+app.mount('/metrics', make_asgi_app())
+
+
 class OrderCreate(BaseModel):
     from_address: str
     to_address: str
@@ -110,15 +153,6 @@ class OrderCreate(BaseModel):
 class UserRegisterSchema(BaseModel):
     username: str
     password: str
-
-
-class DriverCreate(BaseModel):
-    name: str
-    car: str
-
-
-class MoneySchema(BaseModel):
-    money: float
 
 
 @app.exception_handler(OrderError)
@@ -153,6 +187,10 @@ async def get_rate_limiter(request: Request) -> Ratelimit:
 
 async def denylist(request: Request) -> Denylist:
     return request.app.state.denylist
+
+
+async def blaclist(request: Request) -> BlacklistRedis:
+    return request.app.state.blaclist
 
 
 @app.post('/registrate', status_code=HTTPStatus.CREATED)
@@ -264,30 +302,6 @@ async def logout(
     return {"detail": "logged out"}
 
 
-@app.post('/drivers', status_code=HTTPStatus.CREATED)
-@log
-async def create_driver(
-    driver: DriverCreate,
-    pool: asyncpg.Pool = Depends(get_pool)
-        ):
-    '''Добавляем нового водителя'''
-    driver_name = driver.name
-    driver_car = driver.car
-    try:
-        async with pool.acquire() as conn:
-            new_driver = await conn.fetchrow('''
-                INSERT INTO drivers (name, car)
-                VALUES ($1, $2)
-                RETURNING id, name, car
-            ''', driver_name, driver_car)
-
-            logger.info(f'Водитель создан: {new_driver["name"]}')
-            return dict(new_driver)
-    except asyncpg.PostgresError:
-        logger.exception('Ошибка не подключения к бд')
-        raise HTTPException(status_code=500, detail="Ошибка базы данных")
-
-
 @app.get('/taxi', status_code=HTTPStatus.OK)
 @log
 async def list_of_orders(pool: asyncpg.Pool = Depends(get_pool)):
@@ -316,7 +330,8 @@ async def ordering_a_taxi(
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     pool: asyncpg.Pool = Depends(get_pool),
     token_data: TokenPayload = Depends(security.access_token_required),
-    cache: RedisCachedBackend = Depends(get_cache)
+    cache: RedisCachedBackend = Depends(get_cache),
+    blaclist: BlacklistRedis = Depends(blaclist)
         ):
     '''Создаем заказ'''
     user_id = int(token_data.sub)
@@ -332,11 +347,18 @@ async def ordering_a_taxi(
     end
     """
 
+    if await blaclist.get_user_blaclist(user_id):
+        raise HTTPException(
+            status_code=403,
+            detail="У вас есть задолженность. Пополните баланс перед заказом."
+        )
+
     if not idempotency_key:
         raise HTTPException(
             status_code=HTTPStatus.BAD_REQUEST,
             detail="Поле 'idempotency_key' обязательно"
         )
+    start = time.perf_counter()
     async with pool.acquire() as conn:
         async with conn.transaction():
             existing = await conn.fetchrow('''
@@ -405,7 +427,7 @@ async def ordering_a_taxi(
                         'user_id': new_order['user_id']
                     })
 
-                    await conn.fetchrow('''
+                    await conn.execute('''
                         INSERT INTO outbox (
                         event_id, event_type, payload, published)
                         VALUES ($1, $2, $3, $4)
@@ -425,55 +447,21 @@ async def ordering_a_taxi(
                         headers={"Location": f"/taxi/{existing['id']}"}
                     )
 
+                ORDER_CREATE_TOTAL.inc()
+                ORDER_DURATION.observe(time.perf_counter() - start)
                 return JSONResponse(
                     status_code=HTTPStatus.CREATED,
                     content=jsonable_encoder(dict(new_order)),
                     headers={"Location": f"/taxi/{new_order['id']}"}
                 )
+    except Exception as e:
+        ORDER_FAILED_TOTAL.inc()
+        logger.error(f"Ошибка при создании заказа: {e}")
+        raise
 
     finally:
         logger.info(f"Снимаем блокировку для {idempotency_key}")
         await cache.redis.eval(UNLOCK_LUA_SCRIPT, 1, lock_key, lock_token)
-
-
-@app.post('/pay/{user_id}',
-          status_code=HTTPStatus.OK,
-          dependencies=[Depends(security.access_token_required)])
-async def top_up_your_card(
-    payload: MoneySchema,
-    user_id: int,
-    pool: asyncpg.Pool = Depends(get_pool)
-        ):
-    try:
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                money = payload.money
-                card = await conn.fetchrow('''
-                    SELECT * FROM taxi_card WHERE user_id = $1
-                ''', user_id)
-
-                if card:
-                    await conn.execute('''
-                        UPDATE taxi_card
-                        SET balance = balance + $1
-                        WHERE user_id = $2
-                    ''', money, user_id)
-                else:
-                    await conn.execute('''
-                        INSERT INTO taxi_card (user_id, balance)
-                        VALUES ($1, $2)
-                    ''', user_id, money)
-
-                logger.info(f'Баланс пользователя {user_id} пополнен на {money}')
-                return {"message": f"Баланс пополнен на {money}"}
-
-    except asyncpg.ForeignKeyViolationError:
-        raise HTTPException(status_code=500, detail="Пользователь не найден")
-    except asyncpg.CheckViolationError:
-        raise HTTPException(status_code=500, detail="Некорректная сумма")
-    except Exception:
-        logger.exception(f"Неожиданная ошибка")
-        raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
 
 
 @app.get('/taxi/{order_id}',

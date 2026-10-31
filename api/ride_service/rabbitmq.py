@@ -12,9 +12,9 @@ import aio_pika
 RABBITMQ_HOST = os.getenv('RABBITMQ_HOST', 'localhost')
 RABBITMQ_URL = f"amqp://guest:guest@{RABBITMQ_HOST}:5672/"
 
-EXCHANGE_NAME = "taxi_rides_exchange"
-QUEUE_NAME = "taxi_rides_queue"
-ROUTING_KEY = "ride.create"
+EXCHANGE_NAME = "taxi_events"
+QUEUE_NAME = "rides_queue"
+ROUTING_KEY = "driver.assigned"
 
 DLX_EXCHANGE = "taxi_rides.dlx"
 DLQ_QUEUE = "taxi_rides_dlq"
@@ -53,7 +53,7 @@ async def declare_queue(
         durable=True,
         arguments={
             "x-dead-letter-exchange": DLX_EXCHANGE,
-            "x-dead-letter-routing-key": DLQ_ROUTING_KEY,
+            "x-dead-letter-routing-key": RETRY_ROUTING_KEY,
             "x-message-ttl": 60000,
             "x-max-length": 1000,
             "x-consumer-timeout": 3000,
@@ -63,20 +63,9 @@ async def declare_queue(
     return queue
 
 
-async def declare_dlx_queue(
-        channel: AbstractChannel,
-        exchange: AbstractExchange
-         ):
-    queue_dlx: AbstractQueue = await channel.declare_queue(
-        name=DLQ_QUEUE,
-        durable=True
-    )
-    await queue_dlx.bind(exchange=exchange, routing_key=DLQ_ROUTING_KEY)
-    return queue_dlx
-
-
 async def declare_retry_queue(
         channel: AbstractChannel,
+        exchange: AbstractExchange
          ):
     queue = await channel.declare_queue(
         RETRY_QUEUE,
@@ -87,17 +76,32 @@ async def declare_retry_queue(
             "x-dead-letter-routing-key": ROUTING_KEY,
         },
     )
+    await queue.bind(exchange=exchange, routing_key=RETRY_ROUTING_KEY)
     return queue
+
+
+async def declare_dlq_queue(
+    channel: AbstractChannel,
+    dlx_exchange: AbstractExchange
+):
+    dlq_queue = await channel.declare_queue(
+        DLQ_QUEUE,
+        durable=True
+    )
+    await dlq_queue.bind(exchange=dlx_exchange, routing_key=DLQ_ROUTING_KEY)
+    return dlq_queue
 
 
 async def event_publish_json(
         exchange: AbstractExchange,
         routing_key: str,
+        event_id: str,
         data: dict,
         ):
     message = aio_pika.Message(
         json.dumps(data).encode(),
-        delivery_mode=aio_pika.DeliveryMode.PERSISTENT
+        delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+        headers={'event_id': event_id}
         )
     await exchange.publish(
         message,

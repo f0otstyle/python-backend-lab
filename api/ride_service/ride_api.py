@@ -1,6 +1,9 @@
 import asyncio
 from datetime import datetime, timezone
 import json
+import aio_pika
+from uuid import uuid4
+from prometheus_client import make_asgi_app
 from redis.asyncio import Redis
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -9,13 +12,15 @@ from logging_log import logger, log
 import asyncpg
 from aio_pika.abc import AbstractIncomingMessage
 from rabbitmq import (MAX_RETRIES,
+                      DLQ_ROUTING_KEY,
                       connect_rabbitmq,
                       declare_dlx_exchange,
-                      declare_dlx_queue,
                       setup_channel,
+                      declare_dlq_queue,
                       declare_queue,
                       declare_retry_queue
                       )
+from metrics import RIDE_FAILED_TOTAL, RIDE_FINISHED_TOTAL, RIDE_STARTED_TOTAL
 import os
 
 
@@ -25,7 +30,7 @@ DB_USER = os.getenv('POSTGRES_USER', 'pgAdmin')
 DB_PASSWORD = os.getenv('POSTGRES_PASSWORD', 'postgres')
 DB_NAME = os.getenv('POSTGRES_DB', 'taxi_db')
 REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
-REDIS_PORT = os.getenv('REDIS_PORT', 6379)
+REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
 
 TIME = 5
 
@@ -80,12 +85,13 @@ async def lifespan(app: FastAPI):
     app.state.exchange = exchange
     app.state.connection = connection
 
-    await declare_dlx_exchange(channel)
-    await declare_dlx_queue(channel, exchange)
-    await declare_retry_queue(channel)
+    dlx_exchange = await declare_dlx_exchange(channel)
+    await declare_retry_queue(channel, dlx_exchange)
+    await declare_dlq_queue(channel, dlx_exchange)
     queue = await declare_queue(channel, exchange)
 
     app.state.exchange = exchange
+    app.state.dlx_exchange = dlx_exchange
     app.state.connection = connection
     app.state.db = db_pool
 
@@ -110,8 +116,29 @@ class MoneySchema(BaseModel):
     money: float
 
 
+app.mount('/metrics', make_asgi_app())
+
+
 async def handler_order(message: AbstractIncomingMessage):
     async with message.process(ignore_processed=True):
+        death_count = 0
+
+        x_death = message.headers.get("x-death")
+        if x_death:
+            death_count = message.headers["x-death"][0]['count']
+
+        if death_count >= MAX_RETRIES:
+            await app.state.dlx_exchange.publish(
+                aio_pika.Message(
+                    body=message.body,
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                    headers=dict(message.headers)
+                ),
+                routing_key=DLQ_ROUTING_KEY,
+            )
+            await message.ack()
+            return
+
         try:
             body_str = message.body.decode()
             event_data = json.loads(body_str)
@@ -130,95 +157,45 @@ async def handler_order(message: AbstractIncomingMessage):
                 await message.nack(requeue=False)
                 return
 
-            death_count = len(message.headers.get("x-death", []))
-            if death_count >= MAX_RETRIES:
-                logger.warning(f"Заказ {order_id} отправлен в DLQ после {death_count} попыток.")
-                await message.nack(requeue=False)
-                return
+            async with db_pool.acquire() as conn:
+                async with conn.transaction():
+                    try:
+                        RIDE_STARTED_TOTAL.inc()
+                        await conn.execute('''
+                            INSERT INTO processed_events (event_id)
+                            VALUES ($1)
+                        ''', event_id)
+                        result = await taxi_ride(conn=conn, order_id=order_id)
+                        if not result:
+                            logger.warning(
+                                'Заказ не закончен'
+                                )
+                            RIDE_FAILED_TOTAL.inc()
+                            await message.ack()
+                            return
+                        RIDE_FINISHED_TOTAL.inc()
+                    except asyncpg.exceptions.UniqueViolationError:
+                        logger.info(f'Дубликат: событие {event_id} уже обработано')
+                        await message.ack()
+                        return
 
-            dedep_key = f"dedep:order:{event_id}"
-            ock_acquired = await app.state.redis.set(
-                dedep_key, "1",
-                nx=True,
-                ex=3600
-                )
-            if not ock_acquired:
-                logger.info(f'Дубликат: событие {event_id} уже обработано')
-                await message.ack()
-                return
-
-            appoint = await taxi_to_appoint(order_id=order_id)
-            if not appoint:
-                logger.info(
-                    f'Поездка не начата по заказ {order_id}'
-                )
-                await app.state.redis.delete(dedep_key)
-                await message.nack(requeue=True)
-                return
-
-            drive = await taxi_ride(order_id)
-            if not drive:
-                logger.warning(
-                    f'Заказ {order_id} создан без водителя'
-                    )
-                await app.state.redis.delete(dedep_key)
-                await message.nack(requeue=True)
-                return
-
-            pay = await pay_to_taxi(order_id)
-            if not pay:
-                logger.info(
-                    f'Заказ {order_id}, оплата не прошла'
-                    )
-                await app.state.redis.delete(dedep_key)
-                await message.nack(requeue=True)
-                return
-
-            logger.info(
-                f'Заказ {order_id}, успешно оплачен'
-                )
-            logger.info(f'Новый заказ сделан с ID {order_id}')
+            logger.info(f'Заказ закончен для ID {order_id}')
         except Exception as e:
             print(f"Ошибка обработки сообщения: {e}")
-            await message.nack(requeue=True)
-
-
-@log
-async def taxi_to_appoint(
-    order_id: int
-        ):
-    '''Назначаем водителя для поездки'''
-    async with db_pool.acquire() as conn:
-        driver = await conn.fetchrow('SELECT id FROM drivers ORDER BY random() LIMIT 1 FOR UPDATE SKIP LOCKED')
-        if not driver:
-            return None
-
-    async with db_pool.acquire() as conn:
-        result = await conn.fetchrow('''
-            UPDATE order_taxi
-            SET driver_id = $1
-            WHERE id = $2 AND driver_id IS NULL
-            RETURNING id, from_address, to_address, driver_id
-        ''', driver["id"], order_id)
-
-        if not result:
-            return None
-
-        return dict(result) if result else None
-
+            await message.nack(requeue=False)
 
 @log
 async def taxi_ride(
+    conn,
     order_id: int,
         ):
     '''Симуляция поездки'''
-    async with db_pool.acquire() as conn:
-        order = await conn.fetchrow('''
-            SELECT * FROM order_taxi WHERE id=$1
-        ''', order_id)
-        if not order:
-            logger.warning(f'Заказ {order_id} не найден или нет водителя')
-            return None
+    order = await conn.fetchrow('''
+        SELECT * FROM order_taxi WHERE id=$1
+    ''', order_id)
+    if not order:
+        logger.warning(f'Заказ {order_id} не найден или нет водителя')
+        return None
 
     logger.info(f'Поездка по заказу {order_id} началась')
 
@@ -227,55 +204,27 @@ async def taxi_ride(
     await asyncio.sleep(duration)
     end_time = datetime.now(timezone.utc)
 
-    async with db_pool.acquire() as conn:
-        ride = await conn.fetchrow('''
-            INSERT INTO rides (order_id, driver_id, user_id, started_at, finished_at)
-            VALUES ($1, $2, $3, $4, $5)
-            RETURNING id, order_id, driver_id, duration
-        ''', order_id, order['driver_id'], order['user_id'], start_time, end_time)
+    ride = await conn.fetchrow('''
+         INSERT INTO rides (order_id, driver_id, user_id, started_at, finished_at)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, order_id, driver_id, duration
+    ''', order_id, order['driver_id'], order['user_id'], start_time, end_time)
 
-        logger.info(f'Поездка по заказу {order_id} завершена за {duration} сек')
+    logger.info(f'Поездка по заказу {order_id} завершена за {duration} сек')
 
-        return dict(ride)
+    payload_json = json.dumps({
+        'id': order['id'],
+        'user_id': order['user_id'],
+        'price': float(order['price']),
+        'driver_id': order['driver_id']
+    })
 
+    event_id = str(uuid4())
 
-@log
-async def pay_to_taxi(
-    order_id: int,
-        ):
-    '''Оплата поездки'''
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            order = await conn.fetchrow('''
-                SELECT * FROM order_taxi WHERE id=$1
-            ''', order_id)
-            if not order:
-                logger.warning(f'Заказ {order_id} не найден или нет водителя')
-                return None
+    await conn.fetchrow('''
+        INSERT INTO outbox (
+        event_id, event_type, payload, published)
+        VALUES ($1, $2, $3, $4)
+    ''', event_id, 'ride.finished', payload_json, False)
 
-            card = await conn.fetchrow('''
-                SELECT balance FROM taxi_card WHERE user_id = $1 FOR UPDATE
-            ''', order['user_id'])
-
-            if not card:
-                logger.warning(f'У пользователя {order["user_id"]} нет карты')
-                return False
-
-            if card['balance'] < order['price']:
-                logger.warning('Недостаточно средств на карте')
-                return False
-
-            await conn.execute('''
-                UPDATE taxi_card
-                SET balance = balance - $1
-                WHERE user_id = $2
-            ''', order['price'], order['user_id'])
-
-            await conn.execute('''
-                UPDATE drivers
-                SET money = money + $1
-                WHERE id = $2
-                ''', order['price'], order['driver_id'])
-
-            logger.info(f'Списано {order["price"]} с карты пользователя {order["user_id"]}')
-        return True
+    return dict(ride)

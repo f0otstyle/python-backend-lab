@@ -46,6 +46,46 @@ services:
         condition: service_healthy
     restart: always
     stop_grace_period: 30s
+  
+  driver_service:
+    build: ./driver_service
+    env_file: .env
+    ports:
+      - "8070:8000"
+    environment:
+      DB_HOST: "${DB_HOST}" 
+      DB_PORT: "${DB_PORT}"
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB:  "${POSTGRES_DB}"
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+    depends_on:
+      db_api:
+        condition: service_healthy
+      rabbitmq_api:
+        condition: service_started
+    restart: always
+    stop_grace_period: 30s
+  
+  payment_service:
+    build: ./payment_service
+    env_file: .env
+    ports:
+      - "8060:8000"
+    environment:
+      DB_HOST: "${DB_HOST}" 
+      DB_PORT: "${DB_PORT}"
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB:  "${POSTGRES_DB}"
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+    depends_on:
+      db_api:
+        condition: service_healthy
+      rabbitmq_api:
+        condition: service_started
+    restart: always
+    stop_grace_period: 30s
     
   db_api:
     image: postgres:16-alpine
@@ -83,7 +123,7 @@ services:
       test: ["CMD", "rabbitmq-diagnostics", "check_running"]
       interval: 10s
   
-  outbox_api:
+  outbox_api_taxi:
     build: ./taxi_api
     env_file: .env
     command: python outbox_relay.py
@@ -100,6 +140,48 @@ services:
       rabbitmq_api:
         condition: service_started
     restart: always
+  
+  outbox_api_driver:
+    build: ./driver_service
+    env_file: .env
+    command: python outbox_relay.py
+    environment:
+      DB_HOST: "${DB_HOST}"
+      DB_PORT: "${DB_PORT}"
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: "${POSTGRES_DB}"
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+    depends_on:
+      db_api:
+        condition: service_healthy
+      rabbitmq_api:
+        condition: service_started
+    restart: always
+
+  outbox_api_ride:
+    build: ./ride_service
+    env_file: .env
+    command: python outbox_relay.py
+    environment:
+      DB_HOST: "${DB_HOST}"
+      DB_PORT: "${DB_PORT}"
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: "${POSTGRES_DB}"
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+    depends_on:
+      db_api:
+        condition: service_healthy
+      rabbitmq_api:
+        condition: service_started
+    restart: always
+  
+  prometheus:
+    image: prom/prometheus
+    ports: ["9090:9090"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
 
 volumes:
   db_data:
