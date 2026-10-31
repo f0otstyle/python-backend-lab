@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import json
 import aio_pika
 from uuid import uuid4
+from prometheus_client import make_asgi_app
 from redis.asyncio import Redis
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -19,6 +20,7 @@ from rabbitmq import (MAX_RETRIES,
                       declare_queue,
                       declare_retry_queue
                       )
+from metrics import RIDE_FAILED_TOTAL, RIDE_FINISHED_TOTAL, RIDE_STARTED_TOTAL
 import os
 
 
@@ -114,6 +116,9 @@ class MoneySchema(BaseModel):
     money: float
 
 
+app.mount('/metrics', make_asgi_app())
+
+
 async def handler_order(message: AbstractIncomingMessage):
     async with message.process(ignore_processed=True):
         death_count = 0
@@ -155,6 +160,7 @@ async def handler_order(message: AbstractIncomingMessage):
             async with db_pool.acquire() as conn:
                 async with conn.transaction():
                     try:
+                        RIDE_STARTED_TOTAL.inc()
                         await conn.execute('''
                             INSERT INTO processed_events (event_id)
                             VALUES ($1)
@@ -164,8 +170,10 @@ async def handler_order(message: AbstractIncomingMessage):
                             logger.warning(
                                 'Заказ не закончен'
                                 )
+                            RIDE_FAILED_TOTAL.inc()
                             await message.ack()
                             return
+                        RIDE_FINISHED_TOTAL.inc()
                     except asyncpg.exceptions.UniqueViolationError:
                         logger.info(f'Дубликат: событие {event_id} уже обработано')
                         await message.ack()

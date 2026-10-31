@@ -1,7 +1,9 @@
 import asyncio
 from http import HTTPStatus
 import json
+import time
 from uuid import uuid4
+from prometheus_client import make_asgi_app
 from pydantic import BaseModel
 from fastapi import Depends, FastAPI, HTTPException, Request
 from contextlib import asynccontextmanager
@@ -20,6 +22,7 @@ from rabbitmq import (MAX_RETRIES,
                       )
 from aio_pika.abc import AbstractIncomingMessage
 from logging_log import log, logger
+from metrics import DRIVER_ASSIGNED_TOTAL, DRIVER_DURATION, DRIVER_FAILED_TOTAL
 
 
 DB_HOST = os.getenv('DB_HOST', 'localhost')
@@ -102,6 +105,9 @@ async def get_pool(request: Request):
     return request.app.state.db
 
 
+app.mount('/metrics', make_asgi_app())
+
+
 @app.post('/drivers', status_code=HTTPStatus.CREATED)
 @log
 async def create_driver(
@@ -127,6 +133,7 @@ async def create_driver(
 
 
 async def handler_driver(message: AbstractIncomingMessage):
+    start = time.perf_counter()
     async with message.process(ignore_processed=True):
         death_count = 0
 
@@ -184,12 +191,16 @@ async def handler_driver(message: AbstractIncomingMessage):
                         logger.info(
                                     'Водитель для поездки назначен'
                                         )
+                        DRIVER_ASSIGNED_TOTAL.inc()
+                        DRIVER_DURATION.observe(time.perf_counter() - start)
+
                     except asyncpg.exceptions.UniqueViolationError:
                         logger.info(f'Дубликат: событие {event_id} уже обработано')
                         await message.ack()
                         return
         except Exception as e:
             print(f"Ошибка обработки сообщения: {e}")
+            DRIVER_FAILED_TOTAL.inc()
             await message.nack(requeue=False)
 
 

@@ -11,6 +11,7 @@ COPY rabbitmq.py .
 COPY error_handler.py .
 COPY logging_log.py .
 COPY outbox_relay.py .
+COPY metrics.py .
 
 
 CMD ["uvicorn", "ride_api:app", "--host", "0.0.0.0", "--port", "8000"]

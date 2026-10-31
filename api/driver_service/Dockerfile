@@ -10,6 +10,7 @@ COPY main.py .
 COPY rabbitmq.py .
 COPY logging_log.py .
 COPY outbox_relay.py .
+COPY metrics.py .
 
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

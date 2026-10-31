@@ -1,5 +1,6 @@
 from decimal import Decimal
 import json
+import time
 from uuid import uuid4
 from fastapi import (FastAPI,
                      HTTPException,
@@ -13,6 +14,7 @@ from http import HTTPStatus
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials
+from prometheus_client import make_asgi_app
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from denylist import Denylist, ensure_not_revoked
@@ -29,6 +31,7 @@ import bcrypt
 import os
 from deps import security, get_cache, config
 from typing import cast
+from metrics import ORDER_CREATE_TOTAL, ORDER_FAILED_TOTAL, ORDER_DURATION
 
 
 DB_HOST = os.getenv('DB_HOST', 'localhost')
@@ -93,7 +96,7 @@ async def init_db():
             event_id VARCHAR NOT NULL,
             paid_at TIMESTAMPTZ DEFAULT NOW()
         )
-        """) 
+        """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS outbox (
                 id SERIAL PRIMARY KEY,
@@ -136,6 +139,9 @@ async def lifespan(app: FastAPI):
     await db.close()
 
 app = FastAPI(lifespan=lifespan)
+
+
+app.mount('/metrics', make_asgi_app())
 
 
 class OrderCreate(BaseModel):
@@ -352,6 +358,7 @@ async def ordering_a_taxi(
             status_code=HTTPStatus.BAD_REQUEST,
             detail="Поле 'idempotency_key' обязательно"
         )
+    start = time.perf_counter()
     async with pool.acquire() as conn:
         async with conn.transaction():
             existing = await conn.fetchrow('''
@@ -440,11 +447,17 @@ async def ordering_a_taxi(
                         headers={"Location": f"/taxi/{existing['id']}"}
                     )
 
+                ORDER_CREATE_TOTAL.inc()
+                ORDER_DURATION.observe(time.perf_counter() - start)
                 return JSONResponse(
                     status_code=HTTPStatus.CREATED,
                     content=jsonable_encoder(dict(new_order)),
                     headers={"Location": f"/taxi/{new_order['id']}"}
                 )
+    except Exception as e:
+        ORDER_FAILED_TOTAL.inc()
+        logger.error(f"Ошибка при создании заказа: {e}")
+        raise
 
     finally:
         logger.info(f"Снимаем блокировку для {idempotency_key}")

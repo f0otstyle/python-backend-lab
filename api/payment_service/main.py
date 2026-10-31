@@ -1,6 +1,7 @@
 import asyncio
 from http import HTTPStatus
 import json
+import time
 import aio_pika
 from authx import TokenPayload
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -22,6 +23,8 @@ from rabbitmq import (MAX_RETRIES,
                       )
 import os
 from security import security
+from prometheus_client import make_asgi_app
+from metrics import PAYMENT_SUCCESS_TOTAL, PAYMENT_FAILED_TOTAL, PAYMENT_DURATION
 
 
 DB_HOST = os.getenv('DB_HOST', 'localhost')
@@ -109,6 +112,9 @@ async def blaclist(request: Request):
     return request.app.state.blaclist
 
 
+app.mount('/metrics', make_asgi_app())
+
+
 @app.post('/pay',
           status_code=HTTPStatus.OK,
           dependencies=[Depends(security.access_token_required)])
@@ -153,6 +159,7 @@ async def top_up_your_card(
 
 
 async def handler_payment(message: AbstractIncomingMessage):
+    start_time = time.perf_counter()
     async with message.process(ignore_processed=True):
         death_count = 0
 
@@ -219,9 +226,12 @@ async def handler_payment(message: AbstractIncomingMessage):
                 logger.info(
                             'Поездка успешна оплачена'
                                 )
+            PAYMENT_SUCCESS_TOTAL.inc()
+            PAYMENT_DURATION.observe(time.perf_counter() - start_time)
             await message.ack()
         except Exception as e:
             logger.error(f"Критическая ошибка обработки сообщения: {e}", exc_info=True)
+            PAYMENT_FAILED_TOTAL.labels(reason='error').inc
             await message.nack(requeue=False)
 
 
@@ -252,13 +262,13 @@ async def pay_to_taxi(
 
     if not card:
         logger.warning(f'У пользователя {order["user_id"]} нет карты')
-        logger.info(f"Пользователь {order['user_id']} добавлен в черный список")
+        logger.warning(f"Пользователь {order['user_id']} добавлен в черный список")
         await app.state.blaclist.set_user_blaclist(order['user_id'])
         return False
 
     if card['balance'] < order['price']:
         logger.warning('Недостаточно средств на карте')
-        logger.info(f'Пользователь {order['user_id']} добавлен в черный список')
+        logger.warning(f'Пользователь {order['user_id']} добавлен в черный список')
         await app.state.blaclist.set_user_blaclist(order['user_id'])
         return False
 
@@ -279,6 +289,8 @@ async def pay_to_taxi(
         VALUES ($1, $2, $3, $4)
     ''', order_id, order['user_id'], order['price'], event_id)
 
+    logger.info(f'Произошла оплата по заказу {order_id} по событию {event_id}')
     await app.state.blaclist.delete_user_blaclist(order['user_id'])
     logger.info(f'Списано {order["price"]} с карты пользователя {order["user_id"]}')
+
     return True

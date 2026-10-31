@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 5s
+scrape_configs:
+  - job_name: payment
+    static_configs:
+      - targets: ['payment_service:8000']
+  - job_name: driver
+    static_configs:
+      - targets: ['driver_service:8000']
+  - job_name: ride
+    static_configs:
+      - targets: ['ride_service:8000']
+  - job_name: taxi_api
+    static_configs:
+      - targets: ['taxi_api:8000']

@@ -13,6 +13,8 @@ logging.basicConfig(
 
 logger = logging.getLogger('api')
 
+logger.setLevel(logging.INFO)
+
 
 def log(func: Callable):
     @wraps(func)
