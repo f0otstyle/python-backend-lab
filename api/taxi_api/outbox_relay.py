@@ -3,7 +3,8 @@ import asyncpg
 import json
 import os
 import logging
-
+from prometheus_client import start_http_server
+from metrics import OUTBOX_SUCCESS_TOTAL, OUTBOX_FAILED_TOTAL
 from rabbitmq import (connect_rabbitmq,
                       setup_channel,
                       event_publish_json,
@@ -77,7 +78,9 @@ async def outbox_relay():
                                 SET published = TRUE
                                 WHERE id = $1
                             """, row['id'])
+                            OUTBOX_SUCCESS_TOTAL.inc()
                         except Exception as error:
+                            OUTBOX_FAILED_TOTAL.labels(reason='system_error').inc()
                             logger.error(f"Произошла ошибка {error} у записи {row['id']}")
 
                     await conn.execute("""
@@ -93,4 +96,5 @@ async def outbox_relay():
 
 
 if __name__ == "__main__":
+    start_http_server(8002)
     asyncio.run(outbox_relay())

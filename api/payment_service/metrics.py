@@ -17,3 +17,8 @@ PAYMENT_DURATION = Histogram(
     'Время обработки оплаты',
     buckets=[0.01, 0.05, 0.1, 0.5, 1, 2.5, 5],
 )
+
+PAYMENT_DLQ_TOTAL = Counter(
+    'driver_dlq_total',
+    'Количество упавших сообщений в DLQ'
+)

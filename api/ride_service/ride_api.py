@@ -20,7 +20,7 @@ from rabbitmq import (MAX_RETRIES,
                       declare_queue,
                       declare_retry_queue
                       )
-from metrics import RIDE_FAILED_TOTAL, RIDE_FINISHED_TOTAL, RIDE_STARTED_TOTAL
+from metrics import RIDE_FAILED_TOTAL, RIDE_FINISHED_TOTAL, RIDE_STARTED_TOTAL, RIDE_DLQ_TOTAL
 import os
 
 
@@ -136,6 +136,7 @@ async def handler_order(message: AbstractIncomingMessage):
                 ),
                 routing_key=DLQ_ROUTING_KEY,
             )
+            RIDE_DLQ_TOTAL.inc()
             await message.ack()
             return
 
@@ -154,35 +155,43 @@ async def handler_order(message: AbstractIncomingMessage):
 
             if not event_id or not order_id:
                 logger.error("В сообщении нет event_id или id заказа")
+                RIDE_FAILED_TOTAL.labels(reason='system_error').inc()
                 await message.nack(requeue=False)
                 return
 
             async with db_pool.acquire() as conn:
                 async with conn.transaction():
                     try:
-                        RIDE_STARTED_TOTAL.inc()
                         await conn.execute('''
                             INSERT INTO processed_events (event_id)
                             VALUES ($1)
                         ''', event_id)
+                        RIDE_STARTED_TOTAL.inc()
                         result = await taxi_ride(conn=conn, order_id=order_id)
                         if not result:
                             logger.warning(
                                 'Заказ не закончен'
                                 )
-                            RIDE_FAILED_TOTAL.inc()
+                            RIDE_FAILED_TOTAL.labels(
+                                reason='business_rejection'
+                                ).inc()
                             await message.ack()
                             return
-                        RIDE_FINISHED_TOTAL.inc()
                     except asyncpg.exceptions.UniqueViolationError:
                         logger.info(f'Дубликат: событие {event_id} уже обработано')
                         await message.ack()
                         return
 
             logger.info(f'Заказ закончен для ID {order_id}')
+            RIDE_FINISHED_TOTAL.inc()
+            await message.ack()
         except Exception as e:
             print(f"Ошибка обработки сообщения: {e}")
+            RIDE_FAILED_TOTAL.labels(
+                reason='system_error'
+                ).inc()
             await message.nack(requeue=False)
+
 
 @log
 async def taxi_ride(

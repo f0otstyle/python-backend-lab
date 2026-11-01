@@ -22,7 +22,7 @@ from rabbitmq import (MAX_RETRIES,
                       )
 from aio_pika.abc import AbstractIncomingMessage
 from logging_log import log, logger
-from metrics import DRIVER_ASSIGNED_TOTAL, DRIVER_DURATION, DRIVER_FAILED_TOTAL
+from metrics import DRIVER_ASSIGNED_TOTAL, DRIVER_DURATION, DRIVER_FAILED_TOTAL, DRIVER_DLQ_TOTAL
 
 
 DB_HOST = os.getenv('DB_HOST', 'localhost')
@@ -150,7 +150,7 @@ async def handler_driver(message: AbstractIncomingMessage):
                 ),
                 routing_key=DLQ_ROUTING_KEY
             )
-
+            DRIVER_DLQ_TOTAL.inc()
             await message.ack()
             return
         try:
@@ -168,6 +168,7 @@ async def handler_driver(message: AbstractIncomingMessage):
 
             if not event_id or not order_id:
                 logger.error("В сообщении нет event_id или id заказа")
+                DRIVER_FAILED_TOTAL.labels(reason='system_error').inc()
                 await message.nack(requeue=False)
                 return
 
@@ -186,21 +187,25 @@ async def handler_driver(message: AbstractIncomingMessage):
                             logger.info(
                                 f'Водитель не назначен по заказу {order_id}'
                             )
+                            DRIVER_FAILED_TOTAL.labels(
+                                reason='business_rejection'
+                                ).inc()
                             raise RuntimeError("Пока нету водителей")
 
                         logger.info(
                                     'Водитель для поездки назначен'
                                         )
-                        DRIVER_ASSIGNED_TOTAL.inc()
-                        DRIVER_DURATION.observe(time.perf_counter() - start)
 
                     except asyncpg.exceptions.UniqueViolationError:
                         logger.info(f'Дубликат: событие {event_id} уже обработано')
                         await message.ack()
                         return
+                DRIVER_ASSIGNED_TOTAL.inc()
+                DRIVER_DURATION.observe(time.perf_counter() - start)
+                await message.ack()
         except Exception as e:
             print(f"Ошибка обработки сообщения: {e}")
-            DRIVER_FAILED_TOTAL.inc()
+            DRIVER_FAILED_TOTAL.labels(reason='system_error').inc()
             await message.nack(requeue=False)
 
 

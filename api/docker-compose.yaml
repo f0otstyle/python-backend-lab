@@ -126,6 +126,8 @@ services:
   outbox_api_taxi:
     build: ./taxi_api
     env_file: .env
+    ports:
+      - "8072:8002"
     command: python outbox_relay.py
     environment:
       DB_HOST: "${DB_HOST}"
@@ -144,6 +146,8 @@ services:
   outbox_api_driver:
     build: ./driver_service
     env_file: .env
+    ports:
+      - "8071:8001"
     command: python outbox_relay.py
     environment:
       DB_HOST: "${DB_HOST}"
@@ -162,6 +166,8 @@ services:
   outbox_api_ride:
     build: ./ride_service
     env_file: .env
+    ports:
+      - "8073:8003"
     command: python outbox_relay.py
     environment:
       DB_HOST: "${DB_HOST}"

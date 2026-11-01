@@ -447,13 +447,13 @@ async def ordering_a_taxi(
                         headers={"Location": f"/taxi/{existing['id']}"}
                     )
 
-                ORDER_CREATE_TOTAL.inc()
-                ORDER_DURATION.observe(time.perf_counter() - start)
                 return JSONResponse(
                     status_code=HTTPStatus.CREATED,
                     content=jsonable_encoder(dict(new_order)),
                     headers={"Location": f"/taxi/{new_order['id']}"}
                 )
+            ORDER_CREATE_TOTAL.inc()
+            ORDER_DURATION.observe(time.perf_counter() - start)
     except Exception as e:
         ORDER_FAILED_TOTAL.inc()
         logger.error(f"Ошибка при создании заказа: {e}")

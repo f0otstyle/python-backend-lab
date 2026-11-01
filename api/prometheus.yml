@@ -13,3 +13,12 @@ scrape_configs:
   - job_name: taxi_api
     static_configs:
       - targets: ['taxi_api:8000']
+  - job_name: outbox_api_driver
+    static_configs:
+      - targets: ['outbox_api_driver:8001']
+  - job_name: outbox_api_order
+    static_configs:
+      - targets: ['outbox_api_order:8001']
+  - job_name: outbox_api_ride
+    static_configs:
+      - targets: ['outbox_api_ride:8003']

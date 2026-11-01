@@ -24,7 +24,7 @@ from rabbitmq import (MAX_RETRIES,
 import os
 from security import security
 from prometheus_client import make_asgi_app
-from metrics import PAYMENT_SUCCESS_TOTAL, PAYMENT_FAILED_TOTAL, PAYMENT_DURATION
+from metrics import PAYMENT_SUCCESS_TOTAL, PAYMENT_FAILED_TOTAL, PAYMENT_DURATION, PAYMENT_DLQ_TOTAL
 
 
 DB_HOST = os.getenv('DB_HOST', 'localhost')
@@ -176,6 +176,7 @@ async def handler_payment(message: AbstractIncomingMessage):
                     ),
                 routing_key=DLQ_ROUTING_KEY,
             )
+            PAYMENT_DLQ_TOTAL.inc()
             await message.ack()
             return
         try:
@@ -192,6 +193,7 @@ async def handler_payment(message: AbstractIncomingMessage):
             logger.info(f"event_id: {event_id}, order_id: {order_id}")
 
             if not event_id or not order_id:
+                PAYMENT_FAILED_TOTAL.labels(reason='system_error').inc()
                 raise ValueError("Отсутствуют обязательные поля")
 
             async with db_pool.acquire() as conn:
@@ -210,16 +212,23 @@ async def handler_payment(message: AbstractIncomingMessage):
                         if not payment_order:
                             logger.warning('Недостаточно средств на карте')
                             logger.error(f'Поездка по заказу {order_id} не оплачена')
+                            PAYMENT_FAILED_TOTAL.labels(
+                                reason='business_rejection'
+                                ).inc()
                             await message.ack()
                             return
 
                         if payment_order == 'ready':
                             logger.error(f'Заказ {order_id} уже оплачен')
+                            PAYMENT_FAILED_TOTAL.labels(
+                                reason='business_rejection'
+                                ).inc()
                             await message.ack()
                             return
 
                     except asyncpg.exceptions.UniqueViolationError:
                         logger.info(f'Дубликат: событие {event_id} уже обработано')
+                        PAYMENT_FAILED_TOTAL.labels(reason='system_error').inc()
                         await message.ack()
                         return
 
@@ -231,7 +240,7 @@ async def handler_payment(message: AbstractIncomingMessage):
             await message.ack()
         except Exception as e:
             logger.error(f"Критическая ошибка обработки сообщения: {e}", exc_info=True)
-            PAYMENT_FAILED_TOTAL.labels(reason='error').inc
+            PAYMENT_FAILED_TOTAL.labels(reason='system_error').inc()
             await message.nack(requeue=False)
 
 
