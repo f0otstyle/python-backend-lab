@@ -18,7 +18,7 @@ scrape_configs:
       - targets: ['outbox_api_driver:8001']
   - job_name: outbox_api_order
     static_configs:
-      - targets: ['outbox_api_order:8001']
+      - targets: ['outbox_api_order:8002']
   - job_name: outbox_api_ride
     static_configs:
       - targets: ['outbox_api_ride:8003']

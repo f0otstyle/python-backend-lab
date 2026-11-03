@@ -7,8 +7,11 @@ from uuid import uuid4
 
 current_test_dir = os.path.dirname(os.path.abspath(__file__))
 api_root = os.path.dirname(os.path.dirname(current_test_dir))
+service_dir = os.path.join(api_root, 'payment_service')
 if api_root not in sys.path:
     sys.path.insert(0, api_root)
+if service_dir not in sys.path:
+    sys.path.insert(0, service_dir)
 
 
 from payment_service.main import app, pay_to_taxi
@@ -150,7 +153,7 @@ async def test_concurrent_payment_race_condition(
         payment_count = await conn.fetchval('''
         SELECT count(*)
         FROM payments
-        WHERE order_id = $1
+        WHERE user_id = $1
         ''', user_id)
 
         assert user_balance == 650
@@ -170,11 +173,13 @@ async def test_concurrent_payment_race_condition(
 
                     await barrier.wait()
 
-                    await pay_to_taxi(
+                    result = await pay_to_taxi(
                         conn=conn,
                         event_id=event_id,
                         order_id=order_id
                         )
+                    if not result:
+                        return "CONFLICT"
 
                     return "SUCCESS"
 
