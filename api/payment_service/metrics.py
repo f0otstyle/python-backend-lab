@@ -2,12 +2,12 @@ from prometheus_client import Counter, Histogram
 
 
 PAYMENT_SUCCESS_TOTAL = Counter(
-    'http_request_success_payment_total',
+    'payment_success_total',
     'Количество успешных оплат',
 )
 
 PAYMENT_FAILED_TOTAL = Counter(
-    'http_request_failed_payment_total',
+    'payment_failed_total',
     'Количество упавших оплат',
     ['reason']
 )

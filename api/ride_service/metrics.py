@@ -2,19 +2,25 @@ from prometheus_client import Counter, Histogram
 
 
 RIDE_FINISHED_TOTAL = Counter(
-    'http_request_ride_finished_total',
+    'ride_finished_total',
     'Количество законченных',
 )
 
 RIDE_STARTED_TOTAL = Counter(
-    'http_request_ride_started_total',
+    'ride_started_total',
     'Количество начатых поездок',
 )
 
 RIDE_FAILED_TOTAL = Counter(
-    'http_request_ride_failed_total',
+    'ride_failed_total',
     'Количество незаконченных поездок',
     ['reason']
+)
+
+RIDE_DURATION = Histogram(
+    'ride_duration_seconds',
+    'Время  поездки',
+    buckets=[0.01, 0.05, 0.1, 0.5, 1, 2.5, 5]
 )
 
 RIDE_DLQ_TOTAL = Counter(
@@ -23,12 +29,12 @@ RIDE_DLQ_TOTAL = Counter(
 )
 
 OUTBOX_SUCCESS_TOTAL = Counter(
-    'http_request_outbox_order_total',
+    'outbox_ride_success_total',
     'Количество передавших сообщений',
 )
 
 OUTBOX_FAILED_TOTAL = Counter(
-    'http_request_outbox_failed_total',
+    'outbox_ride_failed_total',
     'Количество не успешных назначенных заказов',
     ['reason']
 )

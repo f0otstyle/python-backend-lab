@@ -212,6 +212,9 @@ async def handler_payment(message: AbstractIncomingMessage):
                         if not payment_order:
                             logger.warning('Недостаточно средств на карте')
                             logger.error(f'Поездка по заказу {order_id} не оплачена')
+                            PAYMENT_DURATION.observe(
+                                time.perf_counter() - start_time
+                                )
                             PAYMENT_FAILED_TOTAL.labels(
                                 reason='business_rejection'
                                 ).inc()
@@ -221,14 +224,17 @@ async def handler_payment(message: AbstractIncomingMessage):
                         if payment_order == 'ready':
                             logger.error(f'Заказ {order_id} уже оплачен')
                             PAYMENT_FAILED_TOTAL.labels(
-                                reason='business_rejection'
+                                reason='duplicate'
                                 ).inc()
                             await message.ack()
                             return
 
                     except asyncpg.exceptions.UniqueViolationError:
                         logger.info(f'Дубликат: событие {event_id} уже обработано')
-                        PAYMENT_FAILED_TOTAL.labels(reason='system_error').inc()
+                        PAYMENT_DURATION.observe(
+                            time.perf_counter() - start_time
+                            )
+                        PAYMENT_FAILED_TOTAL.labels(reason='duplicate').inc()
                         await message.ack()
                         return
 

@@ -150,6 +150,7 @@ async def handler_driver(message: AbstractIncomingMessage):
                 ),
                 routing_key=DLQ_ROUTING_KEY
             )
+            DRIVER_DURATION.observe(time.perf_counter() - start)
             DRIVER_DLQ_TOTAL.inc()
             await message.ack()
             return
@@ -168,6 +169,7 @@ async def handler_driver(message: AbstractIncomingMessage):
 
             if not event_id or not order_id:
                 logger.error("В сообщении нет event_id или id заказа")
+                DRIVER_DURATION.observe(time.perf_counter() - start)
                 DRIVER_FAILED_TOTAL.labels(reason='system_error').inc()
                 await message.nack(requeue=False)
                 return
@@ -187,6 +189,9 @@ async def handler_driver(message: AbstractIncomingMessage):
                             logger.info(
                                 f'Водитель не назначен по заказу {order_id}'
                             )
+                            DRIVER_DURATION.observe(
+                                time.perf_counter() - start
+                                )
                             DRIVER_FAILED_TOTAL.labels(
                                 reason='business_rejection'
                                 ).inc()
@@ -205,6 +210,7 @@ async def handler_driver(message: AbstractIncomingMessage):
                 await message.ack()
         except Exception as e:
             print(f"Ошибка обработки сообщения: {e}")
+            DRIVER_DURATION.observe(time.perf_counter() - start)
             DRIVER_FAILED_TOTAL.labels(reason='system_error').inc()
             await message.nack(requeue=False)
 

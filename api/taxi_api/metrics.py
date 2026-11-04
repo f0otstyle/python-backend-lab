@@ -2,12 +2,12 @@ from prometheus_client import Counter, Histogram
 
 
 ORDER_CREATE_TOTAL = Counter(
-    'http_request_order_created_total',
+    'taxi_order_created_total',
     'Количество созданных поездок'
 )
 
 ORDER_FAILED_TOTAL = Counter(
-    'http_request_order_failde_total',
+    'taxi_order_failed_total',
     'Количество неуспешных поездок',
     ['reason']
 )
@@ -19,12 +19,12 @@ ORDER_DURATION = Histogram(
 )
 
 OUTBOX_SUCCESS_TOTAL = Counter(
-    'http_request_outbox_order_total',
+    'outbox_taxi_success_total',
     'Количество передавших сообщений',
 )
 
 OUTBOX_FAILED_TOTAL = Counter(
-    'http_request_outbox_failed_total',
+    'outbox_taxi_failed_total',
     'Количество не успешных назначенных заказов',
     ['reason']
 )

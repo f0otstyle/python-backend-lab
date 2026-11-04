@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timezone
 import json
+import time
 import aio_pika
 from uuid import uuid4
 from prometheus_client import make_asgi_app
@@ -20,7 +21,7 @@ from rabbitmq import (MAX_RETRIES,
                       declare_queue,
                       declare_retry_queue
                       )
-from metrics import RIDE_FAILED_TOTAL, RIDE_FINISHED_TOTAL, RIDE_STARTED_TOTAL, RIDE_DLQ_TOTAL
+from metrics import RIDE_FAILED_TOTAL, RIDE_FINISHED_TOTAL, RIDE_STARTED_TOTAL, RIDE_DLQ_TOTAL, RIDE_DURATION
 import os
 
 
@@ -120,6 +121,7 @@ app.mount('/metrics', make_asgi_app())
 
 
 async def handler_order(message: AbstractIncomingMessage):
+    start = time.perf_counter()
     async with message.process(ignore_processed=True):
         death_count = 0
 
@@ -136,6 +138,7 @@ async def handler_order(message: AbstractIncomingMessage):
                 ),
                 routing_key=DLQ_ROUTING_KEY,
             )
+            RIDE_DURATION.observe(time.perf_counter() - start)
             RIDE_DLQ_TOTAL.inc()
             await message.ack()
             return
@@ -166,12 +169,14 @@ async def handler_order(message: AbstractIncomingMessage):
                             INSERT INTO processed_events (event_id)
                             VALUES ($1)
                         ''', event_id)
+                        RIDE_DURATION.observe(time.perf_counter() - start)
                         RIDE_STARTED_TOTAL.inc()
                         result = await taxi_ride(conn=conn, order_id=order_id)
                         if not result:
                             logger.warning(
                                 'Заказ не закончен'
                                 )
+                            RIDE_DURATION.observe(time.perf_counter() - start)
                             RIDE_FAILED_TOTAL.labels(
                                 reason='business_rejection'
                                 ).inc()
@@ -179,14 +184,19 @@ async def handler_order(message: AbstractIncomingMessage):
                             return
                     except asyncpg.exceptions.UniqueViolationError:
                         logger.info(f'Дубликат: событие {event_id} уже обработано')
+                        RIDE_FAILED_TOTAL.labels(
+                            reason='duplicate'
+                            ).inc()
                         await message.ack()
                         return
 
             logger.info(f'Заказ закончен для ID {order_id}')
+            RIDE_DURATION.observe(time.perf_counter() - start)
             RIDE_FINISHED_TOTAL.inc()
             await message.ack()
         except Exception as e:
             print(f"Ошибка обработки сообщения: {e}")
+            RIDE_DURATION.observe(time.perf_counter() - start)
             RIDE_FAILED_TOTAL.labels(
                 reason='system_error'
                 ).inc()

@@ -2,12 +2,12 @@ from prometheus_client import Counter, Histogram
 
 
 DRIVER_ASSIGNED_TOTAL = Counter(
-    'http_request_driver_assigned_total',
+    'driver_assigned_total',
     'Количество успешно назначенных водителей'
 )
 
 DRIVER_FAILED_TOTAL = Counter(
-    'http_request_driver_failed_total',
+    'driver_failed_total',
     'Количество не успешных назначенных водителей',
     ['reason']
 )
@@ -24,12 +24,12 @@ DRIVER_DLQ_TOTAL = Counter(
 )
 
 OUTBOX_SUCCESS_TOTAL = Counter(
-    'http_request_outbox_driver_total',
+    'outbox_driver_success_total',
     'Количество передавших сообщений',
 )
 
 OUTBOX_FAILED_TOTAL = Counter(
-    'http_request_outbox_failed_total',
+    'outbox_driver_failed_total',
     'Количество не успешных назначенных водителей',
     ['reason']
 )

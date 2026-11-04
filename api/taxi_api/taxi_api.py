@@ -455,6 +455,7 @@ async def ordering_a_taxi(
                     headers={"Location": f"/taxi/{new_order['id']}"}
                 )
     except Exception as e:
+        ORDER_DURATION.observe(time.perf_counter() - start)
         ORDER_FAILED_TOTAL.labels(reason='system_error').inc()
         logger.error(f"Ошибка при создании заказа: {e}")
         raise

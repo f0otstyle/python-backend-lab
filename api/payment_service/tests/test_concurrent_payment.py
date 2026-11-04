@@ -178,13 +178,16 @@ async def test_concurrent_payment_race_condition(
                         event_id=event_id,
                         order_id=order_id
                         )
-                    if not result:
-                        return "CONFLICT"
+                    if result is True:
+                        return "SUCCESS"
+                    if result == 'ready':
+                        return "ALREADY_PAID"
+                    return f"REFUSED: {result!r}"
 
-                    return "SUCCESS"
-
-            except asyncpg.exceptions.UniqueViolationError:
-                return "CONFLICT"
+            except asyncpg.exceptions.UniqueViolationError as exc:
+                if 'payments_order_id_key' in str(exc):
+                    return "CONFLICT"
+                return f"WRONG_CONSTRAINT: {str(exc)}"
             except Exception as exc:
                 return f"ERROR: {exc}"
 
