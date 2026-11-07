@@ -189,12 +189,6 @@ async def handler_driver(message: AbstractIncomingMessage):
                             logger.info(
                                 f'Водитель не назначен по заказу {order_id}'
                             )
-                            DRIVER_DURATION.observe(
-                                time.perf_counter() - start
-                                )
-                            DRIVER_FAILED_TOTAL.labels(
-                                reason='business_rejection'
-                                ).inc()
                             raise RuntimeError("Пока нету водителей")
 
                         logger.info(
@@ -208,6 +202,11 @@ async def handler_driver(message: AbstractIncomingMessage):
                 DRIVER_ASSIGNED_TOTAL.inc()
                 DRIVER_DURATION.observe(time.perf_counter() - start)
                 await message.ack()
+        except RuntimeError as e:
+            print(f"Ошибка обработки сообщения: {e}")
+            DRIVER_DURATION.observe(time.perf_counter() - start)
+            DRIVER_FAILED_TOTAL.labels(reason='business_rejection').inc()
+            await message.nack(requeue=False)
         except Exception as e:
             print(f"Ошибка обработки сообщения: {e}")
             DRIVER_DURATION.observe(time.perf_counter() - start)

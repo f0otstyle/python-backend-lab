@@ -128,8 +128,6 @@ services:
   outbox_api_taxi:
     build: ./taxi_api
     env_file: .env
-    ports:
-      - "8072:8002"
     command: python outbox_relay.py
     environment:
       DB_HOST: "${DB_HOST}"

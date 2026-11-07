@@ -246,7 +246,10 @@ async def handler_payment(message: AbstractIncomingMessage):
             await message.ack()
         except Exception as e:
             logger.error(f"Критическая ошибка обработки сообщения: {e}", exc_info=True)
-            PAYMENT_FAILED_TOTAL.labels(reason='system_error').inc()
+            if isinstance(e, ValueError):
+                PAYMENT_FAILED_TOTAL.labels(reason='malformed').inc()
+            else:
+                PAYMENT_FAILED_TOTAL.labels(reason='system_error').inc()
             await message.nack(requeue=False)
 
 

@@ -291,13 +291,18 @@ async def users_me(dependencies: TokenPayload = Depends(ensure_not_revoked)):
 @app.post('/logout', status_code=HTTPStatus.OK)
 async def logout(
     response: Response,
-    credentials: HTTPAuthorizationCredentials = Security(
-        security.access_token_required
-        ),
-    redis: Redis = Depends(get_cache),
+    request: Request,
+    token_data: TokenPayload = Depends(security.access_token_required),
+    cache: RedisCachedBackend = Depends(get_cache),
     denylist: Denylist = Depends(denylist)
      ):
-    await denylist.revoke_token(redis, credentials.credentials)
+    request_token = await security.get_token_from_request(request)
+    if request_token is None:
+        raise HTTPException(
+            status_code=HTTPStatus.UNAUTHORIZED,
+            detail='Токен не найден'
+        )
+    await denylist.revoke_token(cache.redis, request_token.token, token_data)
     security.unset_access_cookies(response)
     return {"detail": "logged out"}
 
@@ -447,13 +452,13 @@ async def ordering_a_taxi(
                         headers={"Location": f"/taxi/{existing['id']}"}
                     )
 
-                ORDER_CREATE_TOTAL.inc()
-                ORDER_DURATION.observe(time.perf_counter() - start)
-                return JSONResponse(
-                    status_code=HTTPStatus.CREATED,
-                    content=jsonable_encoder(dict(new_order)),
-                    headers={"Location": f"/taxi/{new_order['id']}"}
-                )
+            ORDER_CREATE_TOTAL.inc()
+            ORDER_DURATION.observe(time.perf_counter() - start)
+        return JSONResponse(
+            status_code=HTTPStatus.CREATED,
+            content=jsonable_encoder(dict(new_order)),
+            headers={"Location": f"/taxi/{new_order['id']}"}
+        )
     except Exception as e:
         ORDER_DURATION.observe(time.perf_counter() - start)
         ORDER_FAILED_TOTAL.labels(reason='system_error').inc()

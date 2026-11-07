@@ -19,6 +19,6 @@ PAYMENT_DURATION = Histogram(
 )
 
 PAYMENT_DLQ_TOTAL = Counter(
-    'driver_dlq_total',
+    'payment_dlq_total',
     'Количество упавших сообщений в DLQ'
 )
