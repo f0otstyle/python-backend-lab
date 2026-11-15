@@ -169,7 +169,6 @@ async def handler_order(message: AbstractIncomingMessage):
                             INSERT INTO processed_events (event_id)
                             VALUES ($1)
                         ''', event_id)
-                        RIDE_DURATION.observe(time.perf_counter() - start)
                         RIDE_STARTED_TOTAL.inc()
                         result = await taxi_ride(conn=conn, order_id=order_id)
                         if not result:

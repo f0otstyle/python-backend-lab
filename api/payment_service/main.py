@@ -258,8 +258,14 @@ async def pay_to_taxi(
     conn,
     event_id: str,
     order_id: int,
+    on_payment_missing=None,
         ):
-    '''Оплата поездки'''
+    '''Оплата поездки.
+
+    on_payment_missing — необязательная awaitable-точка синхронизации для
+    тестов гонки: вызывается после реального чтения отсутствующего платежа
+    и до блокировки карты FOR UPDATE. В продакшене не передаётся.
+    '''
     order = await conn.fetchrow('''
         SELECT * FROM order_taxi WHERE id=$1
     ''', order_id)
@@ -273,6 +279,11 @@ async def pay_to_taxi(
     if existing_payment:
         logger.info(f'Заказ {order_id} уже оплачен!')
         return 'ready'
+
+    # Шов для теста гонки: обе задачи встречаются здесь — после реального
+    # чтения отсутствующего платежа и до FOR UPDATE карты.
+    if on_payment_missing is not None:
+        await on_payment_missing()
 
     card = await conn.fetchrow('''
         SELECT balance FROM taxi_card WHERE user_id = $1 FOR UPDATE

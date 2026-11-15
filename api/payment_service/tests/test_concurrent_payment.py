@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import pytest
 import asyncio
 import asyncpg
@@ -111,18 +112,13 @@ async def test_redis_and_blacklist():
     await redis.aclose()
 
 
-@pytest.mark.parametrize("run_id", [1, 2, 3])
-@pytest.mark.asyncio
-async def test_concurrent_payment_race_condition(
-    test_db_pool,
-    test_redis_and_blacklist,
-    run_id
-    ):
-    """
-    Тест доказывает, что при реальной гонке двух транзакций:
-    1. Только одна оплата проходит успешно.
-    2. Вторая получает конфликт уникальности и откатывается.
-    3. Итоговое состояние БД строго соответствует одному списанию.
+# ---------- общие помощники ----------
+
+
+async def prepare_race_data(test_db_pool, run_id):
+    """Создаёт пользователя, водителя, карту и заказ для гонки оплат.
+
+    Возвращает (user_id, driver_id, order_id).
     """
     base_id = run_id * 1000
     user_id = base_id + 1
@@ -132,13 +128,18 @@ async def test_concurrent_payment_race_condition(
     async with test_db_pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("INSERT INTO users (id, name, password) VALUES ($1, 'test_user', 'hash')", user_id)
-            await conn.execute("INSERT INTO drivers (id, name,  car, money) VALUES ($1, 'test_driver', 'test_car', 0)", driver_id)
+            await conn.execute("INSERT INTO drivers (id, name, car, money) VALUES ($1, 'test_driver', 'test_car', 0)", driver_id)
             await conn.execute("INSERT INTO taxi_card (user_id, balance) VALUES ($1, 650)", user_id)
             await conn.execute("""
-                INSERT INTO order_taxi (id, user_id, driver_id, price, idempotency_key, from_address, to_address) 
+                INSERT INTO order_taxi (id, user_id, driver_id, price, idempotency_key, from_address, to_address)
                 VALUES ($1, $2, $3, 300, $4, $5, $6)
             """, order_id, user_id, driver_id, f'test-imp-key-{run_id}', 'Ватутино 19', 'Ленина 22')
 
+    return user_id, driver_id, order_id
+
+
+async def assert_no_payments_yet(test_db_pool, user_id, driver_id):
+    """Предусловие до старта гонки: балансы 650/0, оплат нет."""
     async with test_db_pool.acquire() as conn:
         user_balance = await conn.fetchval('''
         SELECT balance
@@ -160,35 +161,118 @@ async def test_concurrent_payment_race_condition(
         assert driver_balance == 0
         assert payment_count == 0
 
+
+async def assert_single_write_off(test_db_pool, user_id, driver_id):
+    """Итог гонки: ровно одно списание — карта 350, водитель 300, одна запись в payments."""
+    async with test_db_pool.acquire() as conn:
+        user_balance = await conn.fetchval('''
+        SELECT balance
+        FROM taxi_card
+        WHERE user_id = $1
+        ''', user_id)
+        driver_balance = await conn.fetchval('''
+        SELECT money
+        FROM drivers
+        WHERE id = $1
+        ''', driver_id)
+        payment_count = await conn.fetchval('''
+        SELECT count(*)
+        FROM payments
+        WHERE user_id = $1
+        ''', user_id)
+
+        assert user_balance == 350
+        assert driver_balance == 300
+        assert payment_count == 1
+
+
+def mark_event(timeline, worker_id, event_id, phase):
+    """Фиксирует момент события задачи в общем таймлайне гонки."""
+    timeline.append({
+        'worker': worker_id,
+        'event_id': event_id,
+        'phase': phase,
+        't': time.perf_counter()
+    })
+
+
+def print_timeline(timeline, title):
+    """Печатает таймлайн обеих задач с event_id и моментами чтения/завершения."""
+    if not timeline:
+        return
+    t0 = min(e['t'] for e in timeline)
+    lines = [f'--- Таймлайн: {title} ---']
+    for e in sorted(timeline, key=lambda item: item['t']):
+        lines.append(
+            f"+{e['t'] - t0:9.6f}s worker={e['worker']} "
+            f"event_id={e['event_id'][:8]} {e['phase']}"
+        )
+    print('\n'.join(lines))
+
+
+@pytest.mark.parametrize("run_id", [1, 2, 3])
+@pytest.mark.asyncio
+async def test_concurrent_payment_race_condition(
+    test_db_pool,
+    test_redis_and_blacklist,
+    run_id
+    ):
+    """
+    Принудительная гонка двух транзакций: барьер стоит ВНУТРИ pay_to_taxi —
+    обе задачи синхронизируются строго после реального внутреннего чтения
+    отсутствующего платежа и до FOR UPDATE карты (шов on_payment_missing).
+
+    При таком месте ожидания обе задачи гарантированно видят пустой payments
+    до того, как любая из них успела вставить запись, поэтому исход
+    детерминирован: ровно один SUCCESS и один CONFLICT по UNIQUE
+    payments_order_id_key, с откатом второй транзакции.
+
+    Дополнительно проверяется по таймлайну, что оба чтения платежа
+    завершились раньше любого завершения оплаты/конфликта.
+    """
+    user_id, driver_id, order_id = await prepare_race_data(test_db_pool, run_id)
+    await assert_no_payments_yet(test_db_pool, user_id, driver_id)
+
     event_id_1 = str(uuid4())
     event_id_2 = str(uuid4())
     barrier = asyncio.Barrier(2)
+    timeline = []
 
     async def payment_worker(worker_id: int, event_id: str):
         async with test_db_pool.acquire() as conn:
             try:
                 async with conn.transaction():
-                    existing = await conn.fetchval("SELECT 1 FROM payments WHERE order_id = $1", order_id)
-                    assert existing is None
 
-                    await barrier.wait()
+                    async def on_payment_missing():
+                        # pay_to_taxi уже реально прочла payments — платежа нет;
+                        # встречаемся с второй задачей до FOR UPDATE карты
+                        mark_event(timeline, worker_id, event_id, 'payments_read_missing')
+                        await barrier.wait()
+                        mark_event(timeline, worker_id, event_id, 'rendezvous_passed')
 
                     result = await pay_to_taxi(
                         conn=conn,
                         event_id=event_id,
-                        order_id=order_id
+                        order_id=order_id,
+                        on_payment_missing=on_payment_missing
                         )
-                    if result is True:
-                        return "SUCCESS"
-                    if result == 'ready':
-                        return "ALREADY_PAID"
-                    return f"REFUSED: {result!r}"
+                    phase = 'payment_done' if result is True else f'returned_{result}'
+                    mark_event(timeline, worker_id, event_id, phase)
+
+                mark_event(timeline, worker_id, event_id, 'tx_committed')
+                if result is True:
+                    return "SUCCESS"
+                if result == 'ready':
+                    return "ALREADY_PAID"
+                return f"REFUSED: {result!r}"
 
             except asyncpg.exceptions.UniqueViolationError as exc:
+                mark_event(timeline, worker_id, event_id, 'unique_violation')
                 if 'payments_order_id_key' in str(exc):
                     return "CONFLICT"
                 return f"WRONG_CONSTRAINT: {str(exc)}"
             except Exception as exc:
+                mark_event(timeline, worker_id, event_id, 'error')
                 return f"ERROR: {exc}"
 
     results = await asyncio.gather(
@@ -196,26 +280,99 @@ async def test_concurrent_payment_race_condition(
         payment_worker(2, event_id_2)
     )
 
-    assert results.count("SUCCESS") == 1
-    assert results.count("CONFLICT") == 1
+    print_timeline(timeline, f'принудительная гонка run_id={run_id}')
 
-    async with test_db_pool.acquire() as conn:
-        user_balance = await conn.fetchval('''
-                SELECT balance
-                FROM taxi_card
-                WHERE user_id = $1
-                ''', user_id)
-        driver_balance = await conn.fetchval('''
-                SELECT money
-                FROM drivers
-                WHERE id = $1
-                ''', driver_id)
-        payment_count = await conn.fetchval('''
-                SELECT count(*)
-                FROM payments
-                WHERE user_id = $1
-                ''', user_id)
+    # Ровно один SUCCESS и один CONFLICT — гонка воспроизведена принудительно
+    assert results.count("SUCCESS") == 1, f"результаты: {results}"
+    assert results.count("CONFLICT") == 1, f"результаты: {results}"
 
-        assert user_balance == 350
-        assert driver_balance == 300
-        assert payment_count == 1
+    # Пересечение видно по логам: оба чтения отсутствующего платежа
+    # завершились раньше, чем любая задача завершила оплату или конфликт
+    read_times = [e['t'] for e in timeline if e['phase'] == 'payments_read_missing']
+    done_times = [e['t'] for e in timeline if e['phase'] in ('payment_done', 'unique_violation')]
+    assert len(read_times) == 2, f"чтений платежа в таймлайне: {len(read_times)}"
+    assert len(done_times) == 2, f"завершений оплаты в таймлайне: {len(done_times)}"
+    assert max(read_times) < min(done_times), (
+        'чтение отсутствующего платежа одной задачи случилось после '
+        'завершения оплаты другой — барьер не сработал в нужной точке'
+    )
+
+    # Итоговое состояние БД строго соответствует одному списанию
+    await assert_single_write_off(test_db_pool, user_id, driver_id)
+
+
+@pytest.mark.parametrize("run_id", [1, 2, 3])
+@pytest.mark.asyncio
+async def test_concurrent_payment_joint_start(
+    test_db_pool,
+    test_redis_and_blacklist,
+    run_id
+    ):
+    """
+    Совместный старт: барьер стоит до входа в pay_to_taxi (прежнее место).
+    Здесь гонка не принудительная — после отпускания барьера одна задача
+    может полностью завершить оплату до внутреннего чтения платежа другой,
+    поэтому корректны оба исхода: SUCCESS + CONFLICT и SUCCESS + ALREADY_PAID.
+
+    Проверяется главный инвариант идемпотентности: ровно одно списание.
+    Этот сценарий не заменяет отдельную проверку принудительной гонки выше.
+    """
+    user_id, driver_id, order_id = await prepare_race_data(test_db_pool, run_id)
+    await assert_no_payments_yet(test_db_pool, user_id, driver_id)
+
+    event_id_1 = str(uuid4())
+    event_id_2 = str(uuid4())
+    barrier = asyncio.Barrier(2)
+    timeline = []
+
+    async def payment_worker(worker_id: int, event_id: str):
+        async with test_db_pool.acquire() as conn:
+            try:
+                async with conn.transaction():
+
+                    async def on_payment_missing():
+                        # только фиксируем момент реального чтения платежа,
+                        # никого не ждём — задачи стартуют одновременно
+                        mark_event(timeline, worker_id, event_id, 'payments_read_missing')
+
+                    mark_event(timeline, worker_id, event_id, 'before_pay_to_taxi')
+                    result = await pay_to_taxi(
+                        conn=conn,
+                        event_id=event_id,
+                        order_id=order_id,
+                        on_payment_missing=on_payment_missing
+                        )
+                    phase = 'payment_done' if result is True else f'returned_{result}'
+                    mark_event(timeline, worker_id, event_id, phase)
+
+                mark_event(timeline, worker_id, event_id, 'tx_committed')
+                if result is True:
+                    return "SUCCESS"
+                if result == 'ready':
+                    return "ALREADY_PAID"
+                return f"REFUSED: {result!r}"
+
+            except asyncpg.exceptions.UniqueViolationError as exc:
+                mark_event(timeline, worker_id, event_id, 'unique_violation')
+                if 'payments_order_id_key' in str(exc):
+                    return "CONFLICT"
+                return f"WRONG_CONSTRAINT: {str(exc)}"
+            except Exception as exc:
+                mark_event(timeline, worker_id, event_id, 'error')
+                return f"ERROR: {exc}"
+
+    results = await asyncio.gather(
+        payment_worker(1, event_id_1),
+        payment_worker(2, event_id_2)
+    )
+
+    print_timeline(timeline, f'совместный старт run_id={run_id}')
+
+    # Ровно одна оплата; вторая — либо конфликт UNIQUE, либо корректное 'ready'
+    assert results.count("SUCCESS") == 1, f"результаты: {results}"
+    assert results.count("CONFLICT") + results.count("ALREADY_PAID") == 1, (
+        f"неожиданные результаты: {results}"
+    )
+
+    # Главное: состояние БД строго соответствует одному списанию
+    await assert_single_write_off(test_db_pool, user_id, driver_id)
