@@ -39,6 +39,12 @@ REDIS_CONFIG = {
 TEST_DB_DSN = f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}"
 TEST_REDIS_URL = f"redis://{REDIS_CONFIG['host']}:{REDIS_CONFIG['port']}/{REDIS_CONFIG['db']}"
 
+# Таймаут ожидания на барьере (сек), общий для обоих тестов: если одна
+# из задач не дойдёт до барьера (упала раньше), вторая не будет ждать
+# вечно — по таймауту барьер разрывается и все waiter'ы получают
+# BrokenBarrierError.
+BARRIER_TIMEOUT = 5.0
+
 
 @pytest.fixture(scope="function")
 async def test_db_pool():
@@ -210,6 +216,21 @@ def print_timeline(timeline, title):
     print('\n'.join(lines))
 
 
+async def wait_at_barrier(barrier, timeout):
+    """Ждёт вторую задачу на барьере, ограничивая ожидание таймаутом.
+
+    asyncio.Barrier в этой версии Python не умеет в таймаут, поэтому
+    wait() завёрнут в wait_for: если вторая задача не дойдёт до барьера
+    (упала раньше), первая выходит по TimeoutError, барьер разрывается
+    (abort), и ни одна из задач не остаётся ждать бесконечно.
+    """
+    try:
+        await asyncio.wait_for(barrier.wait(), timeout=timeout)
+    except BaseException:
+        await barrier.abort()
+        raise
+
+
 @pytest.mark.parametrize("run_id", [1, 2, 3])
 @pytest.mark.asyncio
 async def test_concurrent_payment_race_condition(
@@ -247,7 +268,7 @@ async def test_concurrent_payment_race_condition(
                         # pay_to_taxi уже реально прочла payments — платежа нет;
                         # встречаемся с второй задачей до FOR UPDATE карты
                         mark_event(timeline, worker_id, event_id, 'payments_read_missing')
-                        await barrier.wait()
+                        await wait_at_barrier(barrier, BARRIER_TIMEOUT)
                         mark_event(timeline, worker_id, event_id, 'rendezvous_passed')
 
                     result = await pay_to_taxi(
@@ -309,7 +330,11 @@ async def test_concurrent_payment_joint_start(
     run_id
     ):
     """
-    Совместный старт: барьер стоит до входа в pay_to_taxi (прежнее место).
+    Совместный старт: барьер стоит до входа в pay_to_taxi (прежнее место) —
+    обе задачи гарантированно получили соединение и дошли до общей точки
+    перед стартом оплаты. Ожидание ограничено таймаутом: если одна задача
+    упала до барьера, барьер разрывается и вторая не ждёт бесконечно.
+
     Здесь гонка не принудительная — после отпускания барьера одна задача
     может полностью завершить оплату до внутреннего чтения платежа другой,
     поэтому корректны оба исхода: SUCCESS + CONFLICT и SUCCESS + ALREADY_PAID.
@@ -332,9 +357,12 @@ async def test_concurrent_payment_joint_start(
 
                     async def on_payment_missing():
                         # только фиксируем момент реального чтения платежа,
-                        # никого не ждём — задачи стартуют одновременно
+                        # никого не ждём — гонка естественная, не принудительная
                         mark_event(timeline, worker_id, event_id, 'payments_read_missing')
 
+                    # совместный старт: обе задачи получили соединение, открыли
+                    # транзакцию и встречаются перед входом в pay_to_taxi
+                    await wait_at_barrier(barrier, BARRIER_TIMEOUT)
                     mark_event(timeline, worker_id, event_id, 'before_pay_to_taxi')
                     result = await pay_to_taxi(
                         conn=conn,

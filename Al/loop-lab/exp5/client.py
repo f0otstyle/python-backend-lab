@@ -97,11 +97,19 @@ class CircuitBreaker:
         Возвращает результат операции. Исключения:
           CircuitOpenError — предохранитель открыт (или проба уже идёт);
           любые исключения операции — пробрасываются дальше, при этом
-          засчитываются как неудача (K подряд → open).
+          засчитываются как неудача (K подряд → open);
+          asyncio.CancelledError — пробрасывается вызывающему как есть
+          и не считается ни успехом, ни неудачей (флаг пробы освобождается,
+          иначе half-open заклинивает навсегда).
         """
         self._acquire()
         try:
             result = await coro_factory()
+        except asyncio.CancelledError:
+            # отмена — не успех и не неудача: освобождаем флаг пробы,
+            # чтобы half-open не заклинило, и пробрасываем отмену дальше
+            self._probe_running = False
+            raise
         except Exception:
             self._on_failure()
             raise

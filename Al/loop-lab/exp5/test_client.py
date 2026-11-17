@@ -294,6 +294,53 @@ def test_breaker_half_open_allows_single_probe():
     asyncio.run(scenario())
 
 
+def test_breaker_half_open_cancelled_probe_releases_flag():
+    """Отмена зависающей half-open пробы (asyncio.CancelledError) не
+    заклинивает предохранитель: флаг пробы освобождается, следующая
+    проба допускается.
+
+    Отмена пробрасывается вызывающему и не считается ни успехом
+    (состояние остаётся half-open), ни неудачей (снова open не происходит).
+    """
+
+    async def scenario():
+        clock = FakeClock()
+        breaker = CircuitBreaker(k=1, timeout=CB_TIMEOUT, clock=clock)
+
+        async def fail():
+            raise RuntimeError('сбой')
+
+        with pytest.raises(RuntimeError):
+            await breaker.call(fail)  # k=1: одна неудача → open
+        clock.advance(CB_TIMEOUT)
+        assert breaker.state == 'half-open'
+
+        started = asyncio.Event()
+
+        async def hanging_probe():
+            started.set()
+            await asyncio.Event().wait()  # никогда не отпустит — ждём отмены
+
+        probe = asyncio.create_task(breaker.call(hanging_probe))
+        await started.wait()  # проба началась: фабрика выполнена, флаг занят
+        probe.cancel()
+
+        # отмена доходит до вызывающего, а не превращается в результат
+        with pytest.raises(asyncio.CancelledError):
+            await probe
+        assert breaker.state == 'half-open'  # ни closed (успех), ни open (неудача)
+
+        # флаг пробы освобождён: следующая проба допускается
+        async def ok_probe():
+            return 'второй'
+
+        assert await breaker.call(ok_probe) == 'второй'
+        assert breaker.state == 'closed'
+        assert breaker.failures == 0
+
+    asyncio.run(scenario())
+
+
 def test_fetch_with_open_breaker_makes_no_transport_calls():
     """Открытый брейкер + fetch_with_retry: отклонение сразу,
     ни одного вызова транспорта."""

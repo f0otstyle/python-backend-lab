@@ -1,53 +1,101 @@
 #!/usr/bin/env python
-# Git pre-commit hook: проверяет синтаксис staged .py файлов перед коммитом.
+# Git pre-commit hook: проверяет синтаксис staged-версий .py файлов перед коммитом.
 # Мир хуков другой, чем у ZCode-хуков: вход = git diff --cached, запрет = любой
 # ненулевой exit (не только 2). Инфраструктурный сбой git не блокирует коммит
 # (fail-open); найденная синтаксическая ошибка блокирует (exit 1).
-# Автор исходной идеи: пользователь; правки: fail-open на git, регистр пути.
-import os
+# Автор исходной идеи: пользователь; правки: fail-open на git, регистр пути,
+# проверяется staged blob (git show :путь), а не рабочая копия; список путей
+# запрашивается с NUL-разделением (-z), чтобы пробелы/кавычки/кириллица в путях
+# не ломали разбор.
 import subprocess
 import sys
 
 
+def _make_print_safe():
+    """Не падать на UnicodeEncodeError при печати путей в не-UTF-8 консоль."""
+    try:
+        sys.stdout.reconfigure(errors="replace")
+        sys.stderr.reconfigure(errors="replace")
+    except AttributeError:
+        pass  # перехваченный/нестандартный stdout без reconfigure
+
+
+def run_git(args):
+    """git с байтовым выводом; None, если сам запуск не удался (нет git)."""
+    try:
+        return subprocess.run(["git", *args], capture_output=True, check=False)
+    except OSError:
+        return None
+
+
 def get_staged_python_files():
-    """Список staged .py файлов (добавленных/изменённых), пути от корня репо."""
-    result = subprocess.run(
-        ["git", "diff", "--cached", "--name-only", "--diff-filter=ACM"],
-        capture_output=True,
-        text=True,
-        check=False,   # fail-open: нет git / не репо → не блокируем коммит
+    """Список staged .py файлов (A/M), пути от корня репо, байтами.
+
+    --no-renames: переименование показывается как отдельные D и A, тогда
+    новый путь точно попадает в список. -z: разделитель NUL, пути без
+    кавычек и экранирования; без -z git прячет не-ASCII пути в C-кавычки.
+    """
+    result = run_git(
+        ["diff", "--cached", "--name-only", "--no-renames", "--diff-filter=ACM", "-z"]
     )
-    if result.returncode != 0:
+    if result is None or result.returncode != 0:
         sys.stderr.write("pre-commit: git недоступен, проверку синтаксиса пропускаю\n")
         return []
-    files = result.stdout.strip().splitlines()
-    return [f for f in files if f.lower().endswith(".py") and os.path.isfile(f)]
+    return [p for p in result.stdout.split(b"\0") if p.lower().endswith(b".py")]
 
 
-def check_syntax(filepath):
-    """True, если файл компилируется; иначе печатает строку и текст ошибки."""
+def get_staged_blob(path):
+    """Байты staged-версии файла (индекс, stage 0); None, если blob недоступен."""
+    result = run_git(["show", ":" + path])
+    if result is None or result.returncode != 0:
+        return None
+    return result.stdout
+
+
+def check_syntax(path, source):
+    """True, если staged-версия компилируется; иначе печатает строку и текст ошибки."""
     try:
-        with open(filepath, "rb") as f:
-            source = f.read()
-        compile(source, filepath, "exec")
+        # bytes, а не str: compile сам применит coding-cookie из шапки файла
+        compile(source, path, "exec")
         return True
     except SyntaxError as e:
-        print(f"{filepath}:{e.lineno}: {e.msg}")
-        print(e.text.strip() if e.text else "")
+        print(f"{path}:{e.lineno}: {e.msg}")
+        print((e.text or "").strip())
+        return False
+    except (ValueError, UnicodeDecodeError) as e:
+        print(f"{path}: {e}")
         return False
 
 
 def main():
-    files = get_staged_python_files()
-    if not files:
+    _make_print_safe()
+    raw_files = get_staged_python_files()
+    if not raw_files:
         return 0
 
-    failed = [f for f in files if not check_syntax(f)]
+    failed = []
+    checked = 0
+    for raw in raw_files:
+        try:
+            path = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            # не-UTF-8 имя не передать git на Windows — fail-open
+            sys.stderr.write(f"pre-commit: путь не в UTF-8, пропускаю: {raw!r}\n")
+            continue
+        source = get_staged_blob(path)
+        if source is None:
+            # gitlink субмодуля или сбой git — fail-open, не блокируем коммит
+            sys.stderr.write(f"pre-commit: staged blob недоступен, пропускаю: {path}\n")
+            continue
+        checked += 1
+        if not check_syntax(path, source):
+            failed.append(path)
+
     if failed:
-        print(f"Синтаксические ошибки в {len(failed)} файл(ах). Коммит отменён.")
+        print(f"Синтаксические ошибки в staged-версии {len(failed)} файл(ах). Коммит отменён.")
         return 1
 
-    print(f"Синтаксис OK ({len(files)} файл(ов)).")
+    print(f"Синтаксис OK ({checked} файл(ов), staged-версия).")
     return 0
 
 
