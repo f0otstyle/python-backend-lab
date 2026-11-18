@@ -341,6 +341,178 @@ def test_breaker_half_open_cancelled_probe_releases_flag():
     asyncio.run(scenario())
 
 
+def test_breaker_cancelled_old_call_does_not_release_foreign_probe():
+    """Отмена вызова, допущенного ещё в closed, не освобождает флаг чужой
+    half-open пробы. Регрессия: раньше любой CancelledError сбрасывал флаг
+    пробы, и параллельно с выполняющейся пробой допускалась вторая.
+
+    Порядок событий: долгий вызов A допущен в closed; неудача (k=1) →
+    open; часы переведены за timeout; в half-open началась зависающая
+    проба C; отмена A (он не владелец пробы); следующий вызов D получает
+    CircuitOpenError, пока C не завершена; успех C закрывает предохранитель.
+    """
+
+    async def scenario():
+        clock = FakeClock()
+        breaker = CircuitBreaker(k=1, timeout=CB_TIMEOUT, clock=clock)
+        release_a = asyncio.Event()
+
+        async def long_call():
+            await release_a.wait()  # старый вызов висит до явного отпускания
+
+        task_a = asyncio.create_task(breaker.call(long_call))
+        await asyncio.sleep(0)  # один шаг: A допущен в closed и висит
+        assert not task_a.done()
+
+        async def fail():
+            raise RuntimeError('сбой')
+
+        with pytest.raises(RuntimeError):
+            await breaker.call(fail)  # k=1: одна неудача → open
+        clock.advance(CB_TIMEOUT)
+        assert breaker.state == 'half-open'
+
+        started = asyncio.Event()
+        release_c = asyncio.Event()
+
+        async def slow_probe():
+            started.set()
+            await release_c.wait()
+            return 'проба'
+
+        probe_c = asyncio.create_task(breaker.call(slow_probe))
+        await started.wait()  # проба C началась: фабрика выполнена, флаг занят
+
+        # отмена старого вызова A: он не владелец пробы — флаг остаётся занят
+        task_a.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task_a
+        assert breaker.state == 'half-open'  # проба C всё ещё выполняется
+
+        # D не допускается второй пробой, пока C не завершена
+        ran = []
+
+        async def would_be_probe():
+            ran.append(1)
+            return 'лишняя проба'
+
+        with pytest.raises(CircuitOpenError):
+            await breaker.call(would_be_probe)
+        assert ran == []  # фабрика не выполнялась
+
+        # прежняя проба C завершается успешно → closed, новое поколение
+        release_c.set()
+        assert await probe_c == 'проба'
+        assert breaker.state == 'closed'
+        assert breaker.failures == 0
+
+    asyncio.run(scenario())
+
+
+def test_breaker_stale_failure_does_not_count_in_new_generation():
+    """Запоздалая неудача вызова, допущенного ещё в прежнем closed, не
+    меняет состояние нового поколения: не растит его счётчик неудач и
+    не открывает предохранитель раньше K НОВЫХ подряд неудач."""
+
+    async def scenario():
+        clock = FakeClock()
+        breaker = CircuitBreaker(k=2, timeout=CB_TIMEOUT, clock=clock)
+        release_a = asyncio.Event()
+
+        async def long_call():
+            await release_a.wait()
+            raise RuntimeError('запоздалый отказ старого вызова')
+
+        task_a = asyncio.create_task(breaker.call(long_call))
+        await asyncio.sleep(0)
+        assert not task_a.done()  # A допущен в closed и висит
+
+        async def fail():
+            raise RuntimeError('сбой')
+
+        with pytest.raises(RuntimeError):
+            await breaker.call(fail)  # неудача №1 в closed (k=2)
+        with pytest.raises(RuntimeError):
+            await breaker.call(fail)  # неудача №2 → open
+        clock.advance(CB_TIMEOUT)
+        assert breaker.state == 'half-open'
+
+        async def ok():
+            return 'проба'
+
+        assert await breaker.call(ok) == 'проба'  # успех пробы → closed
+        assert breaker.failures == 0
+
+        with pytest.raises(RuntimeError):
+            await breaker.call(fail)  # первая неудача нового поколения
+        assert breaker.state == 'closed'
+
+        # старый вызов завершается неудачей — поколение уже другое,
+        # отказ игнорируется: ни open, ни рост счётчика
+        release_a.set()
+        with pytest.raises(RuntimeError):
+            await task_a
+        assert breaker.state == 'closed'
+        assert breaker.failures == 1
+
+        with pytest.raises(RuntimeError):
+            await breaker.call(fail)  # вторая НОВАЯ подряд неудача → open
+        assert breaker.state == 'open'
+
+    asyncio.run(scenario())
+
+
+def test_breaker_stale_success_does_not_reset_new_generation_counter():
+    """Запоздалый успех вызова из прежнего поколения не сбрасывает счётчик
+    неудач нового поколения: после него K-я НОВАЯ подряд неудача всё ещё
+    открывает предохранитель."""
+
+    async def scenario():
+        clock = FakeClock()
+        breaker = CircuitBreaker(k=2, timeout=CB_TIMEOUT, clock=clock)
+        release_a = asyncio.Event()
+
+        async def long_call():
+            await release_a.wait()
+            return 'запоздалый успех старого вызова'
+
+        task_a = asyncio.create_task(breaker.call(long_call))
+        await asyncio.sleep(0)
+        assert not task_a.done()  # A допущен в closed и висит
+
+        async def fail():
+            raise RuntimeError('сбой')
+
+        with pytest.raises(RuntimeError):
+            await breaker.call(fail)  # неудача №1 в closed (k=2)
+        with pytest.raises(RuntimeError):
+            await breaker.call(fail)  # неудача №2 → open
+        clock.advance(CB_TIMEOUT)
+        assert breaker.state == 'half-open'
+
+        async def ok():
+            return 'проба'
+
+        assert await breaker.call(ok) == 'проба'  # проба → closed
+        with pytest.raises(RuntimeError):
+            await breaker.call(fail)  # первая неудача нового поколения
+        assert breaker.state == 'closed'
+        assert breaker.failures == 1
+
+        # старый вызов завершается успехом — поколение уже другое:
+        # счётчик неудач нового поколения не сбрасывается
+        release_a.set()
+        assert await task_a == 'запоздалый успех старого вызова'
+        assert breaker.failures == 1
+        assert breaker.state == 'closed'
+
+        with pytest.raises(RuntimeError):
+            await breaker.call(fail)  # вторая НОВАЯ подряд неудача → open
+        assert breaker.state == 'open'
+
+    asyncio.run(scenario())
+
+
 def test_fetch_with_open_breaker_makes_no_transport_calls():
     """Открытый брейкер + fetch_with_retry: отклонение сразу,
     ни одного вызова транспорта."""

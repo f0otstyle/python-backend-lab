@@ -63,6 +63,15 @@ class CircuitBreaker:
     Публичные атрибуты: state ('closed' | 'open' | 'half-open' —
     переход в half-open ленивый, вычисляется по часам), failures —
     счётчик подряд неудач (сбрасывается успехом).
+
+    Поколения состояния: каждый переход состояния (closed → open,
+    half-open → closed, half-open → open) открывает новое поколение.
+    Вызов запоминает поколение на момент допуска, и его запоздалое
+    завершение (успех, неудача, отмена) игнорируется, если поколение
+    уже сменилось, — вызов из прежнего поколения не должен менять
+    состояние нового. Флаг пробы в half-open освобождает только
+    владелец пробы (вызов, допущенный пробой в текущем поколении),
+    а не любой отменённый вызов.
     """
 
     CLOSED = 'closed'
@@ -77,6 +86,8 @@ class CircuitBreaker:
         self.failures = 0
         self.opened_at = 0.0
         self._probe_running = False
+        self._probe_gen = None   # поколение, в котором допущена текущая проба
+        self._generation = 0     # номер поколения состояния; растёт на переходах
 
     @property
     def state(self) -> str:
@@ -96,31 +107,39 @@ class CircuitBreaker:
 
         Возвращает результат операции. Исключения:
           CircuitOpenError — предохранитель открыт (или проба уже идёт);
-          любые исключения операции — пробрасываются дальше, при этом
-          засчитываются как неудача (K подряд → open);
+          любые исключения операции — пробрасываются дальше и засчитываются
+          как неудача текущего поколения (запоздалое завершение вызова,
+          допущенного в прежнем поколении, состояние не меняет);
           asyncio.CancelledError — пробрасывается вызывающему как есть
-          и не считается ни успехом, ни неудачей (флаг пробы освобождается,
-          иначе half-open заклинивает навсегда).
+          и не считается ни успехом, ни неудачей (флаг пробы освобождает
+          только владелец пробы, иначе half-open заклинивает навсегда;
+          отмена вызова, допущенного в прежнем поколении, чужую пробу
+          не отпускает).
         """
-        self._acquire()
+        gen = self._generation
+        probe_gen = self._acquire()
         try:
             result = await coro_factory()
         except asyncio.CancelledError:
-            # отмена — не успех и не неудача: освобождаем флаг пробы,
-            # чтобы half-open не заклинило, и пробрасываем отмену дальше
-            self._probe_running = False
+            # отмена — не успех и не неудача: флаг пробы освобождает только
+            # владелец пробы, отмена более не допущенного в half-open вызова
+            # флаг не трогает; отмену пробрасываем дальше
+            if probe_gen is not None and probe_gen == self._probe_gen:
+                self._probe_running = False
             raise
         except Exception:
-            self._on_failure()
+            self._on_failure(gen)
             raise
-        self._on_success()
+        self._on_success(gen)
         return result
 
-    def _acquire(self) -> None:
+    def _acquire(self):
         """Решает, пускает ли предохранитель новый вызов.
 
         open — CircuitOpenError; half-open — пускает ровно одну пробу
         (второй параллельный вызов получает CircuitOpenError).
+        Возвращает поколение, в котором вызов допущен пробой; для вызова
+        в closed — None (он не владеет флагом пробы).
         """
         state = self.state
         if state == self.OPEN:
@@ -129,18 +148,40 @@ class CircuitBreaker:
             if self._probe_running:
                 raise CircuitOpenError('в half-open уже выполняется проба')
             self._probe_running = True
+            self._probe_gen = self._generation
+            return self._generation
+        return None
 
-    def _on_success(self) -> None:
-        """Успех (в том числе успех пробы) → closed, счётчик неудач сброшен."""
-        self._state = self.CLOSED
-        self.failures = 0
-        self._probe_running = False
+    def _on_success(self, gen) -> None:
+        """Успех (в том числе успех пробы) → closed, счётчик неудач сброшен.
 
-    def _on_failure(self) -> None:
-        """Неудача: в half-open — сразу снова open; в closed — после
-        K подряд неудач → open."""
-        self._probe_running = False
+        Вызов прежнего поколения ничего не меняет: его запоздалый успех
+        не должен сбрасывать счётчик неудач нового поколения.
+        """
+        if gen != self._generation:
+            return
         if self.state == self.HALF_OPEN:
+            # успех пробы: half-open → closed, новое поколение
+            self._probe_running = False
+            self._state = self.CLOSED
+            self.failures = 0
+            self._generation += 1
+            return
+        self.failures = 0
+
+    def _on_failure(self, gen) -> None:
+        """Неудача: в half-open — сразу снова open; в closed — после
+        K подряд неудач → open.
+
+        Вызов прежнего поколения ничего не меняет: его запоздалая неудача
+        не должна ни считаться в новом поколении, ни возвращать open
+        во время чужой пробы.
+        """
+        if gen != self._generation:
+            return
+        if self.state == self.HALF_OPEN:
+            # отказ пробы: half-open → open, новое поколение
+            self._probe_running = False
             self._trip()
             return
         self.failures += 1
@@ -148,7 +189,9 @@ class CircuitBreaker:
             self._trip()
 
     def _trip(self) -> None:
-        """Открыть предохранитель, запомнив момент (по инъецированным часам)."""
+        """Открыть предохранитель, запомнив момент (по инъецированным часам);
+        открытый — новое поколение состояния."""
+        self._generation += 1
         self._state = self.OPEN
         self.opened_at = self.clock()
 
