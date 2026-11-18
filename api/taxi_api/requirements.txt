@@ -6,3 +6,4 @@ bcrypt
 redis==8.1.0
 aio-pika
 httpx
+prometheus-client==0.26.0

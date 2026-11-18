@@ -1,3 +1,10 @@
 [tool.pytest.ini_options]
 pythonpath = ["."]
-testpaths = ["tests"]
+testpaths = [
+    "payment_service/tests",
+    "ride_service/tests",
+    "taxi_api/tests",
+]
+
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

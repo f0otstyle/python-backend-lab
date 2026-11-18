@@ -12,16 +12,16 @@ import aio_pika
 RABBITMQ_HOST = os.getenv('RABBITMQ_HOST', 'localhost')
 RABBITMQ_URL = f"amqp://guest:guest@{RABBITMQ_HOST}:5672/"
 
-EXCHANGE_NAME = "taxi_rides_exchange"
-QUEUE_NAME = "taxi_rides_queue"
-ROUTING_KEY = "ride.create"
+EXCHANGE_NAME = "taxi_events"
+QUEUE_NAME = "taxi_queue"
+ROUTING_KEY = "order.create"
 
-DLX_EXCHANGE = "taxi_rides.dlx"
-DLQ_QUEUE = "taxi_rides_dlq"
-DLQ_ROUTING_KEY = "ride.dead_letter"
+DLX_EXCHANGE = "taxi_order.dlx"
+DLQ_QUEUE = "taxi_order_dlq"
+DLQ_ROUTING_KEY = "order.dead_letter"
 
-RETRY_QUEUE = "taxi_rides_retry_queue"
-RETRY_ROUTING_KEY = "ride.retry"
+RETRY_QUEUE = "taxi_order_retry_queue"
+RETRY_ROUTING_KEY = "order.retry"
 RETRY_TTL_MS = 5000
 MAX_RETRIES = 3
 

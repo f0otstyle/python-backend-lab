@@ -1,0 +1,3 @@
+# Скрипты хуков должны оставаться с LF даже при core.autocrlf=true,
+# иначе shebang с \r на конце ломает запуск в sh (Windows).
+githooks/pre-commit eol=lf
